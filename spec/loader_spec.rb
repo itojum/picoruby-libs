@@ -34,7 +34,7 @@ RSpec.describe PicoRubyLibs do
   end
 
   def resolver(files, **options)
-    PicoRubyLibs::Resolver.new(fake_io_class.new(files), cdn: cdn, **options)
+    PicoRubyLibs::Resolver.new(fake_io_class.new(files), **{ cdn: cdn }.merge(options))
   end
 
   def package(name, version, fields)
@@ -124,6 +124,37 @@ RSpec.describe PicoRubyLibs do
         r = resolver(package('leftpad', '1.0.0', 'main' => 'index.js'))
         expect(r.resolve('leftpad/x.rb')).to be_nil
         expect(r.resolve('nothing-here/x.rb')).to be_nil
+      end
+    end
+
+    describe 'several CDNs' do
+      let(:mirror) { 'https://mirror.test/npm/' }
+      let(:files) do
+        {
+          "#{mirror}mylib/package.json" => { 'name' => 'mylib', 'version' => '1.2.3', 'picoruby' => 'lib/mylib.rb' },
+          "#{mirror}mylib@1.2.3/lib/mylib.rb" => "require_relative 'part'\nM = P",
+          "#{mirror}mylib@1.2.3/lib/part.rb" => 'P = 1',
+        }
+      end
+
+      it 'takes the package from the first CDN that has it, with the others as mirrors' do
+        r = resolver(files, cdn: [cdn, 'https://mirror.test/npm'])
+        expect(r.resolve('mylib').url).to eq "#{mirror}mylib@1.2.3/lib/mylib.rb"
+        expect(r.resolve('mylib').mirrors).to eq ["#{cdn}mylib@1.2.3/lib/mylib.rb"]
+        expect(r.io.calls).to eq ["#{cdn}mylib/package.json", "#{mirror}mylib/package.json"]
+      end
+
+      it 'fetches a file from the next CDN when the first cannot serve it' do
+        files["#{cdn}mylib/package.json"] = files["#{mirror}mylib/package.json"]
+        r = resolver(files, cdn: [cdn, mirror])
+        out = PicoRubyLibs::Expander.new(r).expand("require 'mylib'")
+        expect(out.index('P = 1')).to be < out.index('M = P')
+        expect(r.io.calls).to include("#{cdn}mylib@1.2.3/lib/part.rb", "#{mirror}mylib@1.2.3/lib/part.rb")
+      end
+
+      it 'accepts a single CDN given as a String' do
+        r = resolver(files, cdn: mirror)
+        expect(r.resolve('mylib').mirrors).to eq []
       end
     end
 

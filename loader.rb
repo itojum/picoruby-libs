@@ -54,12 +54,15 @@ module PicoRubyLibs
     end
   end
 
+  # `mirrors` are the same file on the other CDNs, tried in order when `url`
+  # cannot be fetched.
   class Library
-    attr_reader :id, :url
+    attr_reader :id, :url, :mirrors
 
-    def initialize(id, url)
+    def initialize(id, url, mirrors = [])
       @id = id
       @url = url
+      @mirrors = mirrors
     end
 
     def ==(other)
@@ -118,8 +121,8 @@ module PicoRubyLibs
   # ---------------------------------------------------------------- resolving
 
   # Turns require names into Libraries. `io` does the network work:
-  #   io.fetch_text(url)    -> String, or nil when not found
-  #   io.fetch_json(url)    -> Hash, or nil when not found
+  #   io.fetch_text(url)    -> String, or nil when not found or unreachable
+  #   io.fetch_json(url)    -> Hash, or nil when not found or unreachable
   #   io.absolute_url(path, base = nil)
   #                         -> URL of `path` relative to `base`, or to the
   #                            page when `base` is nil
@@ -129,10 +132,13 @@ module PicoRubyLibs
     def initialize(io, imports: {}, cdn: nil, builtins: BUILTINS)
       @io = io
       @imports = imports
-      @cdn = cdn || DEFAULT_CDN
+      # `cdn` is one CDN or a list of them, tried in order.
+      @cdns = (cdn.is_a?(Array) ? cdn : [cdn || DEFAULT_CDN]).map { |c| c.end_with?('/') ? c : c + '/' }
+      @cdns = [DEFAULT_CDN] if @cdns.empty?
       @builtins = builtins
       @cache = {}
       @packages = {}
+      @package_cdn = {}
       @pinned = {}
     end
 
@@ -151,7 +157,7 @@ module PicoRubyLibs
       dot = last.rindex('.')
       path = dot && dot > 0 ? name : name + '.rb'
       url = @io.absolute_url(path, base)
-      Library.new(url, url)
+      library(url, url)
     end
 
     private
@@ -193,9 +199,17 @@ module PicoRubyLibs
         return nil
       end
       @pinned[name] ||= pkg['version']
-      url = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
-      return Library.new(pkg['name'], url + entry.sub(/^\.?\//, '')) if path.empty?
-      Library.new(url + path, url + path)
+      url = "#{@package_cdn["#{name}@#{pkg['version']}"]}#{pkg['name']}@#{pkg['version']}/"
+      return library(pkg['name'], url + entry.sub(/^\.?\//, '')) if path.empty?
+      library(url + path, url + path)
+    end
+
+    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
+    def library(id, url)
+      cdn = @cdns.find { |c| url.start_with?(c) }
+      return Library.new(id, url) if cdn.nil?
+      path = url[cdn.length..-1]
+      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
@@ -204,7 +218,13 @@ module PicoRubyLibs
     def package_json(name, version)
       key = name + (version ? "@#{version}" : '')
       return @packages[key] if @packages.key?(key)
-      pkg = @io.fetch_json("#{@cdn}#{key}/package.json")
+      pkg = nil
+      @cdns.each do |cdn|
+        pkg = @io.fetch_json("#{cdn}#{key}/package.json")
+        next if pkg.nil?
+        @package_cdn["#{name}@#{pkg['version']}"] = cdn
+        break
+      end
       @packages[key] = pkg
       @packages["#{name}@#{pkg['version']}"] ||= pkg if pkg
       pkg
@@ -266,7 +286,7 @@ module PicoRubyLibs
           # again through require_relative or a path is not inlined twice.
           @loaded[lib.id] = true
           @loaded[lib.url] = true
-          body = expand(source(lib.url), lib.url)
+          body = expand(source(lib), lib.url)
           out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
           out << body.sub(/\n+$/, '')
           out << "# --- end #{req.name} ---"
@@ -278,10 +298,16 @@ module PicoRubyLibs
 
     private
 
-    def source(url)
-      @sources[url] ||= begin
-        text = @resolver.io.fetch_text(url)
-        raise Error, "failed to load #{url}" if text.nil?
+    # The text of `lib`, from its URL or else from the first mirror that has
+    # it.
+    def source(lib)
+      @sources[lib.url] ||= begin
+        text = nil
+        ([lib.url] + lib.mirrors).each do |url|
+          text = @resolver.io.fetch_text(url)
+          break unless text.nil?
+        end
+        raise Error, "failed to load #{lib.url}" if text.nil?
         text
       end
     end
@@ -297,7 +323,7 @@ module PicoRubyLibs
     def fetch_text(url)
       JS.global[:__picoruby_libs_arg] = url
       JS.eval(
-        'fetch(window.__picoruby_libs_arg).then(r => r.ok ? r.text() : null)'
+        'fetch(window.__picoruby_libs_arg).then(r => r.ok ? r.text() : null).catch(() => null)'
       ).await
     end
 
@@ -311,6 +337,7 @@ module PicoRubyLibs
             name: p.name, version: p.version, main: p.main,
             picoruby: (p.picoruby && typeof p.picoruby === 'object') ? p.picoruby.main : p.picoruby
           })
+          .catch(() => null)
       JS
       return nil if pkg.nil?
       { 'name' => pkg[:name], 'version' => pkg[:version], 'main' => pkg[:main], 'picoruby' => pkg[:picoruby] }
@@ -322,15 +349,16 @@ module PicoRubyLibs
       JS.eval('new URL(window.__picoruby_libs_arg, window.__picoruby_libs_base || document.baseURI).href')
     end
 
-    # [imports Hash, cdn or nil] from every text/ruby-importmap script.
+    # [imports Hash, CDN list or nil] from every text/ruby-importmap script.
+    # "cdn" is a URL or a list of them.
     def import_map
       map = JS.eval(<<~JS)
         (() => {
-          const map = { imports: {}, cdn: null };
+          const map = { imports: {}, cdns: [] };
           document.querySelectorAll('#{IMPORT_MAP}').forEach(el => {
             const json = JSON.parse(el.textContent || '{}');
             Object.assign(map.imports, json.imports || {});
-            if (json.cdn) map.cdn = json.cdn;
+            if (json.cdn) map.cdns = [].concat(json.cdn).map(String);
           });
           map.entries = Object.entries(map.imports);
           return map;
@@ -338,7 +366,8 @@ module PicoRubyLibs
       JS
       imports = {}
       map[:entries].to_a.each { |pair| imports[pair[0]] = pair[1] }
-      [imports, map[:cdn]]
+      cdns = map[:cdns].to_a.map { |c| c.to_s }
+      [imports, cdns.empty? ? nil : cdns]
     end
 
     # [[code, filename or nil, URL or nil]] for each text/ruby-app script, in
