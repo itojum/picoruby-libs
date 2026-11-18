@@ -344,7 +344,14 @@ module PicoRubyLibs
         if src.empty?
           [el[:textContent].to_s, nil, nil]
         else
-          [fetch_text(src), src.split('/').last, src]
+          # A rejected fetch (network or CORS error) raises at the await.
+          # Return nil so only this script is skipped.
+          code = begin
+            fetch_text(src)
+          rescue => e
+            nil
+          end
+          [code, src.split('/').last, src]
         end
       end
     end
