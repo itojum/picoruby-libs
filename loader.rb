@@ -71,6 +71,11 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
+  # A call of require / require_relative with a string literal anywhere in a
+  # line, for finding the ones REQUIRE_LINE does not take (`require 'a' if x`,
+  # `require 'a'; require 'b'`).
+  REQUIRE_CALL = /(^|[^A-Za-z0-9_.:@$])require(_relative)?[ \t]*\(?[ \t]*['"]([^'"]+)['"]/
+
   # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
   # `<<ID`, with the identifier optionally quoted.
   HEREDOC_START = /^<<([~-]?)(["'`]?)([A-Za-z_][A-Za-z0-9_]*)\2/
@@ -83,6 +88,38 @@ module PicoRubyLibs
       found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
     end
     found
+  end
+
+  # [[index, name, relative], ...] for the require calls in `code` that are
+  # not a whole require line, so are left for PicoRuby. Calls after a `#`
+  # that starts a comment are skipped.
+  def self.find_other_requires(code)
+    found = []
+    each_code_line(code) do |line, i|
+      next if line.match(REQUIRE_LINE)
+      hash = comment_start(line)
+      rest = line
+      offset = 0
+      while (m = rest.match(REQUIRE_CALL))
+        at = offset + rest.index(m[0])
+        break if hash && hash < at
+        found << [i, m[3], m[2] == '_relative']
+        offset = at + m[0].length
+        rest = line[offset..-1]
+      end
+    end
+    found
+  end
+
+  # The index of the `#` that starts a comment in `line` (not `#{`), or nil.
+  # A `#` inside a string is taken for a comment too.
+  def self.comment_start(line)
+    pos = 0
+    while (h = line.index('#', pos))
+      return h unless line[h + 1] == '{'
+      pos = h + 1
+    end
+    nil
   end
 
   # The indentation of the least indented code line. A script written in the
@@ -295,10 +332,15 @@ module PicoRubyLibs
   # inside a library are expanded the same way, so a library can depend on
   # another one by requiring it.
   class Expander
+    # Messages about requires left for PicoRuby that likely name a library,
+    # e.g. `require 'mylib' if x`. Each starts with "file:line: ".
+    attr_reader :warnings
+
     def initialize(resolver)
       @resolver = resolver
       @loaded = {}
       @sources = {}
+      @warnings = []
     end
 
     # `bases` are the URLs `require_relative` resolves against, one per code
@@ -317,6 +359,7 @@ module PicoRubyLibs
       # The file being expanded counts as loaded, so a circular
       # require_relative back to it (e.g. from a script's own src) is dropped.
       @loaded[base] = true if base
+      warn_other_requires(code, base, file)
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
       top = PicoRubyLibs.top_indent(code).length
@@ -356,6 +399,19 @@ module PicoRubyLibs
     end
 
     private
+
+    # A require_relative always names a file to inline; a require is checked
+    # with the resolver, so built-ins and non-library packages pass quietly.
+    def warn_other_requires(code, base, file)
+      PicoRubyLibs.find_other_requires(code).each do |found|
+        index, name, relative = found
+        next unless relative || @resolver.resolve(name)
+        call = relative ? "require_relative '#{name}'" : "require '#{name}'"
+        @warnings << "#{file}:#{index + 1}: #{call} was not expanded, so PicoRuby " +
+                     'will raise LoadError. picoruby-libs only expands a require ' +
+                     'that is a whole statement on its own line'
+      end
+    end
 
     def source(url)
       @sources[url] ||= begin
@@ -436,6 +492,12 @@ module PicoRubyLibs
       end
     end
 
+    # Shows `message` as a warning in the browser console.
+    def warn(message)
+      JS.global[:__picoruby_libs_arg] = "picoruby-libs: #{message}"
+      JS.eval('console.warn(window.__picoruby_libs_arg)')
+    end
+
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
     def create_task(code, filename)
@@ -453,8 +515,9 @@ module PicoRubyLibs
   def self.boot(io = BrowserIO.new)
     imports, cdn = io.import_map
     scripts = io.app_scripts
-    expanded = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
-                       .expand_all(scripts.map { |s| s[0] }, scripts.map { |s| s[2] })
+    expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
+    expanded = expander.expand_all(scripts.map { |s| s[0] }, scripts.map { |s| s[2] })
+    expander.warnings.each { |w| io.warn(w) }
     expanded.each_with_index { |code, i| io.create_task(code, scripts[i][1]) }
   end
 end

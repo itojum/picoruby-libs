@@ -94,7 +94,7 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 
 ## Limitations
 
-- Only `require` lines that are a whole statement are recognized.
+- Only `require` lines that are a whole statement are recognized. Others (`require 'a' if x`, `require 'a'; require 'b'`) are left for PicoRuby, which raises `LoadError` since its file system is empty. When such a require names a library (or is a `require_relative`), the loader prints a warning with the file and line in the browser console.
 - A library is inlined where its `require` is written, so a `require` / `require_relative` of a library must be at the top level. One indented more than the script's least indented line (inside a `def`, `class` or `if`) raises `PicoRubyLibs::Error` with the file and line, since inlining it there would break the method or define the library under another namespace. Requires of built-in libraries are left to PicoRuby and may be indented.
 - Requires inside heredocs and `=begin`/`=end` comments are left alone, but other multi-line strings (`%q{...}`, `'...'` spanning lines) are not tracked: a line in them that reads as a whole `require` statement is expanded.
 - Line numbers in error messages refer to the expanded script. Each library is wrapped in `# --- picoruby-libs: name (url) ---` comments.

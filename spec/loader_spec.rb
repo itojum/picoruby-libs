@@ -123,6 +123,26 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.find_other_requires' do
+    it 'finds require calls that are not a whole require line' do
+      code = [
+        "require 'whole'",
+        "require 'a' if x",
+        "require 'b'; require_relative('c')",
+        "x = 1 # require 'in_comment'",
+        "puts \"\#{y}\"; require 'd' # require 'e'",
+        "# require 'f' if x",
+        'H = <<~TXT',
+        "  require 'g' if x",
+        'TXT',
+        "obj.require 'h'",
+      ].join("\n")
+      expect(described_class.find_other_requires(code)).to eq [
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false],
+      ]
+    end
+  end
+
   describe '.parse_spec' do
     it 'splits a package name and version' do
       expect(described_class.parse_spec('mylib')).to eq ['mylib', nil]
@@ -262,6 +282,33 @@ RSpec.describe PicoRubyLibs do
 
       it 'is left alone when it names a built-in' do
         expect(expander.expand("def f\n  require 'js'\nend")).to eq "def f\n  require 'js'\nend"
+      end
+    end
+
+    describe 'warnings' do
+      let(:files) { libraries("require 'b' if x\nA = 1", 'B = 2').merge(package('leftpad', '1.0.0', 'main' => 'index.js')) }
+      let(:expander) { described_class.new(resolver(files)) }
+
+      it 'warns with the file and line about requires of libraries it does not expand' do
+        code = "require 'js' if x\nrequire 'leftpad' if x\nrequire 'a' if x\nrequire_relative 'r' unless y"
+        out = expander.expand_all(['puts 1', code])[1]
+        expect(out).to eq code
+        expect(expander.warnings.size).to eq 2
+        expect(expander.warnings[0]).to start_with("text/ruby-app script #2:3: require 'a' was not expanded")
+        expect(expander.warnings[1]).to start_with("text/ruby-app script #2:4: require_relative 'r' was not expanded")
+      end
+
+      it 'warns about requires inside a library, naming the library file' do
+        expander.expand("require 'a'")
+        expect(expander.warnings).to eq [
+          "#{cdn}a@1.0.0/a.rb:1: require 'b' was not expanded, so PicoRuby will raise LoadError. " \
+          'picoruby-libs only expands a require that is a whole statement on its own line',
+        ]
+      end
+
+      it 'is empty when every require is recognized' do
+        expander.expand("require 'b'\nrequire 'js'")
+        expect(expander.warnings).to be_empty
       end
     end
 

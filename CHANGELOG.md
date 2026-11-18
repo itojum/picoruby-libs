@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `require` / `require_relative` the loader does not expand because it is not a whole statement on its own line (`require 'a' if x`, `require 'a'; require 'b'`) now prints a warning with the file and line in the browser console, when it names a library or a file. Built-ins and npm packages that are not PicoRuby libraries are not reported. ([#19](https://github.com/itojum/picoruby-libs/issues/19))
+
 ### Changed
 
 - An indented `require` / `require_relative` of a library (one the loader would inline, not a built-in) now raises `PicoRubyLibs::Error` naming the file and line, instead of inlining the library inside a `def` (a SyntaxError) or a `class` (another namespace). Move it to the top level. A script indented as a whole (as inline scripts usually are) is measured from its least indented line. ([#15](https://github.com/itojum/picoruby-libs/issues/15))
