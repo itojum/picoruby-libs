@@ -106,10 +106,34 @@ RSpec.describe PicoRubyLibs do
       expect(r.io.calls).to all(satisfy { |url| !url.include?('/js/') })
     end
 
+    describe 'a path inside a package' do
+      it 'is pinned to the version package.json reports' do
+        r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
+        lib = r.resolve('mylib/lib/extra.rb')
+        expect(lib).to eq PicoRubyLibs::Library.new("#{cdn}mylib@1.2.3/lib/extra.rb", "#{cdn}mylib@1.2.3/lib/extra.rb")
+      end
+
+      it 'uses the same release as the package entry, fetching package.json once' do
+        r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
+        r.resolve('mylib')
+        expect(r.resolve('mylib/lib/extra.rb').url).to eq "#{cdn}mylib@1.2.3/lib/extra.rb"
+        expect(r.io.calls.count { |url| url.end_with?('package.json') }).to eq 1
+      end
+
+      it 'is left to PicoRuby when the package is missing or not a PicoRuby library' do
+        r = resolver(package('leftpad', '1.0.0', 'main' => 'index.js'))
+        expect(r.resolve('leftpad/x.rb')).to be_nil
+        expect(r.resolve('nothing-here/x.rb')).to be_nil
+      end
+    end
+
     describe 'import map' do
       subject(:r) do
         resolver(
-          { "#{cdn}mylib@2.0.0/package.json" => { 'name' => 'mylib', 'version' => '2.0.0', 'main' => 'lib/mylib.rb' } },
+          {
+            "#{cdn}mylib@2.0.0/package.json" => { 'name' => 'mylib', 'version' => '2.0.0', 'main' => 'lib/mylib.rb' },
+            "#{cdn}other@1/package.json" => { 'name' => 'other', 'version' => '1.4.0' },
+          },
           imports: {
             'mylib' => 'npm:mylib@2.0.0',
             'local' => './vendor/local.rb',
@@ -128,8 +152,12 @@ RSpec.describe PicoRubyLibs do
         expect(r.resolve('local').url).to eq 'https://site.test/game/vendor/local.rb'
       end
 
-      it 'maps a name to a file inside an npm package' do
-        expect(r.resolve('sub').url).to eq "#{cdn}other@1/lib/sub.rb"
+      it 'maps a name to a file inside an npm package, pinned to the version package.json reports' do
+        expect(r.resolve('sub').url).to eq "#{cdn}other@1.4.0/lib/sub.rb"
+      end
+
+      it 'pins a path inside a package to the version the import map gives the package' do
+        expect(r.resolve('mylib/lib/extra.rb').url).to eq "#{cdn}mylib@2.0.0/lib/extra.rb"
       end
 
       it 'leaves a name mapped to false to PicoRuby' do
@@ -227,6 +255,16 @@ RSpec.describe PicoRubyLibs do
         expect { expander.expand("require_relative 'nope'") }
           .to raise_error(PicoRubyLibs::Error, %r{failed to load https://site.test/game/nope.rb})
       end
+    end
+
+    it 'inlines an npm entry file once when it is also required by path or require_relative' do
+      files = package('a', '1.0.0', 'picoruby' => 'lib/a.rb').merge(
+        "#{cdn}a@1.0.0/lib/a.rb" => 'A = 1',
+        "#{cdn}a@1.0.0/lib/b.rb" => "require_relative 'a'\nB = 1",
+      )
+      out = described_class.new(resolver(files)).expand("require 'a'\nrequire 'a/lib/a.rb'\nrequire 'a/lib/b.rb'")
+      expect(out.scan('A = 1').size).to eq 1
+      expect(out).to include('B = 1')
     end
 
     it "raises when a library's file cannot be loaded" do

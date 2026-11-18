@@ -132,6 +132,8 @@ module PicoRubyLibs
       @cdn = cdn || DEFAULT_CDN
       @builtins = builtins
       @cache = {}
+      @packages = {}
+      @pinned = {}
     end
 
     # A Library, or nil when `name` is left to PicoRuby: a built-in, a
@@ -168,29 +170,52 @@ module PicoRubyLibs
     end
 
     # strict: raise instead of returning nil when it is not a library.
+    #
+    # Every file is fetched from the exact version package.json reports, so
+    # "latest" resolves once and every file of a package comes from the same
+    # release. A file inside a package ("pkg/lib/x.rb") is pinned the same
+    # way, and a path without a version uses the version already pinned for
+    # the package (or the one the import map gives it).
     def resolve_npm(spec, require_name, strict)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
-      base = @cdn + name + (version ? "@#{version}" : '') + '/'
-      unless path.empty?
-        url = base + path
-        return Library.new(url, url)
-      end
-
-      pkg = @io.fetch_json(base + 'package.json')
+      version ||= @pinned[name] || mapped_version(name) unless path.empty?
+      pkg = package_json(name, version)
       if pkg.nil?
         raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if strict
         return nil
       end
       entry = PicoRubyLibs.ruby_entry(pkg)
-      if entry.nil?
+      # A file inside a package named in the import map is taken as it is; a
+      # plain require of one must still be a PicoRuby library.
+      if entry.nil? && (path.empty? || !strict)
         raise Error, "#{spec} is not a PicoRuby library (no \"picoruby\" field in package.json)" if strict
         return nil
       end
-      # Pin to the version package.json reports, so "latest" resolves once and
-      # every file of the library comes from the same release.
-      entry = entry.sub(/^\.?\//, '')
-      Library.new(pkg['name'], "#{@cdn}#{pkg['name']}@#{pkg['version']}/#{entry}")
+      @pinned[name] ||= pkg['version']
+      url = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
+      return Library.new(pkg['name'], url + entry.sub(/^\.?\//, '')) if path.empty?
+      Library.new(url + path, url + path)
+    end
+
+    # package.json of `name` at `version` (nil: the latest), fetched once.
+    # It is also kept under the exact version it reports, so a file pinned to
+    # that version later needs no second request.
+    def package_json(name, version)
+      key = name + (version ? "@#{version}" : '')
+      return @packages[key] if @packages.key?(key)
+      pkg = @io.fetch_json("#{@cdn}#{key}/package.json")
+      @packages[key] = pkg
+      @packages["#{name}@#{pkg['version']}"] ||= pkg if pkg
+      pkg
+    end
+
+    # The version an import map entry "name": "npm:name@ver" gives `name`.
+    def mapped_version(name)
+      mapped = @imports[name]
+      return nil unless mapped.is_a?(String) && mapped.start_with?('npm:')
+      mapped_name, version = PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(mapped[4..-1])[0])
+      mapped_name == name ? version : nil
     end
   end
 
@@ -232,12 +257,15 @@ module PicoRubyLibs
         lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
         if lib.nil?
           out << line
-        elsif @loaded[lib.id]
+        elsif @loaded[lib.id] || @loaded[lib.url]
           out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
         else
           # Marked before expanding its body, so a circular require is
           # dropped like Ruby's require does for a file that is loading.
+          # A file is marked by its URL too, so an npm entry file reached
+          # again through require_relative or a path is not inlined twice.
           @loaded[lib.id] = true
+          @loaded[lib.url] = true
           body = expand(source(lib.url), lib.url)
           out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
           out << body.sub(/\n+$/, '')

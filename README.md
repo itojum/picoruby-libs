@@ -64,7 +64,7 @@ A library is an npm package that names its Ruby entry file in `package.json`:
 
 The entry file can load the library's other files with `require_relative`.
 
-`require 'name'` loads the npm package `name`. The version is resolved once from `package.json` and every file is then fetched from that exact version.
+`require 'name'` loads the npm package `name`. The version is resolved once from `package.json` and every file is then fetched from that exact version. `require 'name/lib/other.rb'` loads one file of the package from the same version.
 
 ## Import map
 
@@ -86,7 +86,7 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 | Value | Meaning |
 |-------|---------|
 | `"npm:pkg"`, `"npm:pkg@ver"` | An npm package, resolved through its `package.json`. It must be a PicoRuby library. |
-| `"npm:pkg@ver/path.rb"` | A file inside an npm package. |
+| `"npm:pkg@ver/path.rb"` | A file inside an npm package, fetched from the exact version its `package.json` reports. |
 | any other string | A URL, relative to the page. |
 | `false` | Leave this require to PicoRuby. |
 
