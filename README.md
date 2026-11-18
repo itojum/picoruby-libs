@@ -33,7 +33,21 @@ Rules:
 - Each library is inlined once, at its first `require` in document order. Later requires of it are dropped, and so is a circular one, as in Ruby.
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it.
 - A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
-- Relative requires (`require './x'`) are left as they are. Bundle a program split into files into one script before loading it.
+- Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
+
+## require_relative
+
+PicoRuby.wasm has no `require_relative`, but the loader expands it like `require`, so code ported from ruby.wasm or CRuby that is split into files keeps working:
+
+```ruby
+# game.rb, loaded with <script type="text/ruby-app" src="game.rb">
+require_relative 'lib/player'   # fetches lib/player.rb next to game.rb
+```
+
+- The path is resolved against the URL of the file that contains the line: the `src` of a `text/ruby-app` script, the URL of a library file, or the page for a script written in the page.
+- `.rb` is added when the name has no extension.
+- Each file is inlined once, at its first require, as with `require`. A file that cannot be fetched is an error.
+- It works inside libraries too, so a library can be published as several files and `require_relative` them from its entry file.
 
 ## Publishing a library
 
@@ -48,7 +62,7 @@ A library is an npm package that names its Ruby entry file in `package.json`:
 
 `"picoruby": { "main": "lib/mylib.rb" }` works too. Without the field, a `"main"` that ends in `.rb` is used.
 
-The entry file must be a single Ruby script. A library split into files can bundle itself at publish time, or require its other files as separate libraries.
+The entry file can load the library's other files with `require_relative`.
 
 `require 'name'` loads the npm package `name`. The version is resolved once from `package.json` and every file is then fetched from that exact version.
 

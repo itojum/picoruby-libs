@@ -1,3 +1,4 @@
+require 'uri'
 PICORUBY_LIBS_NO_BOOT = true
 require_relative '../loader'
 
@@ -25,7 +26,8 @@ RSpec.describe PicoRubyLibs do
         @files[url]
       end
 
-      def absolute_url(path)
+      def absolute_url(path, base = nil)
+        return URI.join(base, path).to_s if base
         'https://site.test/game/' + path.sub(%r{^\./}, '')
       end
     end
@@ -57,6 +59,12 @@ RSpec.describe PicoRubyLibs do
 
       found = described_class.find_requires(code).map { |r| [r.index, r.name] }
       expect(found).to eq [[0, 'mylib'], [1, 'js'], [2, 'foo'], [8, './local']]
+    end
+
+    it 'finds require_relative lines and marks them relative' do
+      code = "require_relative 'a'\n  require_relative('../b.rb') # c\nrequire 'c'"
+      found = described_class.find_requires(code).map { |r| [r.index, r.name, r.relative?] }
+      expect(found).to eq [[0, 'a', true], [1, '../b.rb', true], [2, 'c', false]]
     end
   end
 
@@ -168,6 +176,57 @@ RSpec.describe PicoRubyLibs do
     it 'drops a circular require like Ruby does' do
       out = described_class.new(resolver(libraries("require 'b'", "require 'a'"))).expand("require 'a'")
       expect(out).to include('already loaded')
+    end
+
+    describe 'require_relative' do
+      let(:files) do
+        {
+          'https://site.test/game/src/main.rb' => "require_relative 'lib/util'\nputs U",
+          'https://site.test/game/src/lib/util.rb' => "require_relative '../const.rb'\nU = C + 1",
+          'https://site.test/game/src/const.rb' => "require_relative 'lib/util'\nC = 1",
+          'https://site.test/game/top.rb' => 'T = 1',
+          'https://site.test/game/src/back.rb' => "require_relative '../main'\nBACK = 1",
+          "#{cdn}a@1.0.0/a.rb" => "require_relative 'parts/x'\nA = X",
+          "#{cdn}a@1.0.0/parts/x.rb" => 'X = 1',
+        }.merge(package('a', '1.0.0', 'picoruby' => 'a.rb'))
+      end
+      let(:expander) { described_class.new(resolver(files)) }
+
+      it "resolves against the requiring file's URL, recursively, inlining each file once" do
+        out = expander.expand("require_relative 'lib/util'\nputs U", 'https://site.test/game/src/main.rb')
+        expect(out.index('C = 1')).to be < out.index('U = C + 1')
+        expect(out.index('U = C + 1')).to be < out.index('puts U')
+        expect(out).to include('already loaded')
+      end
+
+      it 'resolves against the page in a script written in the page' do
+        expect(expander.expand_all(["require_relative './top'"])[0]).to include('T = 1')
+      end
+
+      it 'resolves inside an npm library against its file URL' do
+        out = expander.expand("require 'a'")
+        expect(out.index('X = 1')).to be < out.index('A = X')
+      end
+
+      it "drops a circular require_relative back to the script's own src" do
+        out = expander.expand_all(["require_relative 'src/back'\nMAIN = 1"], ['https://site.test/game/main.rb'])[0]
+        expect(out.scan('MAIN = 1').size).to eq 1
+        expect(out).to include('already loaded')
+      end
+
+      it 'keeps an explicit extension and adds .rb only when there is none' do
+        r = resolver({})
+        base = 'https://site.test/game/main.rb'
+        expect(r.resolve_relative('parts/helper.ruby', base).url).to eq 'https://site.test/game/parts/helper.ruby'
+        expect(r.resolve_relative('parts/helper.rb', base).url).to eq 'https://site.test/game/parts/helper.rb'
+        expect(r.resolve_relative('../v1.2/x', base).url).to eq 'https://site.test/v1.2/x.rb'
+        expect(r.resolve_relative('./x', base).url).to eq 'https://site.test/game/x.rb'
+      end
+
+      it 'raises when the file does not exist' do
+        expect { expander.expand("require_relative 'nope'") }
+          .to raise_error(PicoRubyLibs::Error, %r{failed to load https://site.test/game/nope.rb})
+      end
     end
 
     it "raises when a library's file cannot be loaded" do

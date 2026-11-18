@@ -13,7 +13,8 @@
 # `load` stops silently at its first `await`. So the loader does not load
 # libraries at runtime: it reads each `text/ruby-app` script, replaces every
 # `require 'name'` line of a library with the library's code, and starts the
-# result as one PicoRuby task, where `await` works.
+# result as one PicoRuby task, where `await` works. `require_relative 'x'` is
+# expanded the same way, with x.rb fetched relative to the requiring file.
 #
 # A library is an npm package whose package.json names its Ruby entry file in
 # a "picoruby" field (or a "main" ending in .rb).
@@ -34,17 +35,22 @@ module PicoRubyLibs
     funicular markdown drb sqlite3 indexeddb midibase task
   ]
 
-  # `require 'x'` / `require('x')` / `require "x"` as a whole statement on one
-  # line, with an optional trailing comment.
-  REQUIRE_LINE = /^([ \t]*)require[ \t]*\(?[ \t]*['"]([^'"]+)['"][ \t]*\)?[ \t]*(#.*)?$/
+  # `require 'x'` / `require('x')` / `require "x"` (or `require_relative`) as
+  # a whole statement on one line, with an optional trailing comment.
+  REQUIRE_LINE = /^([ \t]*)require(_relative)?[ \t]*\(?[ \t]*['"]([^'"]+)['"][ \t]*\)?[ \t]*(#.*)?$/
 
   class Require
     attr_reader :index, :indent, :name
 
-    def initialize(index, indent, name)
+    def initialize(index, indent, name, relative = false)
       @index = index
       @indent = indent
       @name = name
+      @relative = relative
+    end
+
+    def relative?
+      @relative
     end
   end
 
@@ -80,7 +86,7 @@ module PicoRubyLibs
       end
       break if line.strip == '__END__' && line.start_with?('__END__')
       m = line.match(REQUIRE_LINE)
-      found << Require.new(i, m[1], m[2]) if m
+      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
     end
     found
   end
@@ -114,7 +120,9 @@ module PicoRubyLibs
   # Turns require names into Libraries. `io` does the network work:
   #   io.fetch_text(url)    -> String, or nil when not found
   #   io.fetch_json(url)    -> Hash, or nil when not found
-  #   io.absolute_url(path) -> URL of `path` relative to the page
+  #   io.absolute_url(path, base = nil)
+  #                         -> URL of `path` relative to `base`, or to the
+  #                            page when `base` is nil
   class Resolver
     attr_reader :io
 
@@ -131,6 +139,17 @@ module PicoRubyLibs
     def resolve(name)
       @cache[name] = resolve_uncached(name) unless @cache.key?(name)
       @cache[name]
+    end
+
+    # The Library of `require_relative name` in the file at `base` (a URL, or
+    # nil for a script written in the page). ".rb" is added when the last
+    # path component has no extension.
+    def resolve_relative(name, base)
+      last = name.split('/').last || ''
+      dot = last.rindex('.')
+      path = dot && dot > 0 ? name : name + '.rb'
+      url = @io.absolute_url(path, base)
+      Library.new(url, url)
     end
 
     private
@@ -188,11 +207,18 @@ module PicoRubyLibs
       @sources = {}
     end
 
-    def expand_all(codes)
-      codes.map { |code| expand(code) }
+    # `bases` are the URLs `require_relative` resolves against, one per code
+    # (nil for a script written in the page).
+    def expand_all(codes, bases = [])
+      out = []
+      codes.each_with_index { |code, i| out << expand(code, bases[i]) }
+      out
     end
 
-    def expand(code)
+    def expand(code, base = nil)
+      # The file being expanded counts as loaded, so a circular
+      # require_relative back to it (e.g. from a script's own src) is dropped.
+      @loaded[base] = true if base
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
 
@@ -203,7 +229,7 @@ module PicoRubyLibs
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
-        lib = @resolver.resolve(req.name)
+        lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
         if lib.nil?
           out << line
         elsif @loaded[lib.id]
@@ -212,7 +238,7 @@ module PicoRubyLibs
           # Marked before expanding its body, so a circular require is
           # dropped like Ruby's require does for a file that is loading.
           @loaded[lib.id] = true
-          body = expand(source(lib.url))
+          body = expand(source(lib.url), lib.url)
           out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
           out << body.sub(/\n+$/, '')
           out << "# --- end #{req.name} ---"
@@ -262,9 +288,10 @@ module PicoRubyLibs
       { 'name' => pkg[:name], 'version' => pkg[:version], 'main' => pkg[:main], 'picoruby' => pkg[:picoruby] }
     end
 
-    def absolute_url(path)
+    def absolute_url(path, base = nil)
       JS.global[:__picoruby_libs_arg] = path
-      JS.eval('new URL(window.__picoruby_libs_arg, document.baseURI).href')
+      JS.global[:__picoruby_libs_base] = base
+      JS.eval('new URL(window.__picoruby_libs_arg, window.__picoruby_libs_base || document.baseURI).href')
     end
 
     # [imports Hash, cdn or nil] from every text/ruby-importmap script.
@@ -286,16 +313,18 @@ module PicoRubyLibs
       [imports, map[:cdn]]
     end
 
-    # [[code, filename or nil]] for each text/ruby-app script, in order.
+    # [[code, filename or nil, URL or nil]] for each text/ruby-app script, in
+    # order. The URL (the `src`, made absolute by the DOM) is the base of the
+    # script's require_relative.
     def app_scripts
       JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
         src = el[:src].to_s
         if src.empty?
-          [el[:textContent].to_s, nil]
+          [el[:textContent].to_s, nil, nil]
         else
           code = fetch_text(src)
           raise Error, "failed to load #{src}" if code.nil?
-          [code, src.split('/').last]
+          [code, src.split('/').last, src]
         end
       end
     end
@@ -318,7 +347,7 @@ module PicoRubyLibs
     imports, cdn = io.import_map
     scripts = io.app_scripts
     expanded = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
-                       .expand_all(scripts.map { |s| s[0] })
+                       .expand_all(scripts.map { |s| s[0] }, scripts.map { |s| s[2] })
     expanded.each_with_index { |code, i| io.create_task(code, scripts[i][1]) }
   end
 end
