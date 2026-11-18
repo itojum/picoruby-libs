@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `BUILTINS` now lists every library compiled into PicoRuby.wasm 4.0.5, so requiring `uri`, `env`, `rng`, `io/console`, `pack`, `marshal` and the other missing built-ins no longer asks npm first. ([#17](https://github.com/itojum/picoruby-libs/issues/17))
+
+### Added
+
+- A **Builtins** workflow (weekly, and on changes to `loader.rb`) fails when `BUILTINS` differs from the libraries compiled into the latest `@picoruby/wasm-wasi`. Run it locally with `npm run check:builtins`. ([#17](https://github.com/itojum/picoruby-libs/issues/17))
+
 ## [0.2.0] - 2026-11-19
 
 ### Added
