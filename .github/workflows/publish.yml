@@ -24,7 +24,7 @@ jobs:
           echo "::error::Run this workflow on a release tag (v1.2.3), not on ${GITHUB_REF_NAME}."
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the tag matches package.json
         env:
