@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Inline `text/ruby-app` scripts get a file name from their position on the page (`inline-1.rb`, …), so errors in them say where they come from. The file name of a script with `src` no longer keeps the query string or fragment (`app.rb?v=2` → `app.rb`). ([#23](https://github.com/itojum/picoruby-libs/issues/23))
+- A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
 
 ## [0.2.0] - 2026-11-19
 
