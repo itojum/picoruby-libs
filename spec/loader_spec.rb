@@ -16,8 +16,11 @@ RSpec.describe PicoRubyLibs do
         @calls = []
       end
 
-      def fetch_text(url)
+      # A file's hash is served at "<url>#sri"; a fetch with another
+      # integrity fails like the browser's does.
+      def fetch_text(url, integrity = nil)
         @calls << url
+        return nil if integrity && @files["#{url}#sri"] != integrity
         @files[url]
       end
 
@@ -296,6 +299,40 @@ RSpec.describe PicoRubyLibs do
       out = described_class.new(resolver(files)).expand("require 'a'\nrequire 'a/lib/a.rb'\nrequire 'a/lib/b.rb'")
       expect(out.scan('A = 1').size).to eq 1
       expect(out).to include('B = 1')
+    end
+
+    describe 'integrity' do
+      let(:files) do
+        package('a', '1.0.0', 'picoruby' => 'a.rb').merge(
+          "#{cdn}a@1.0.0/a.rb" => 'A = 1',
+          "#{cdn}a@1.0.0/a.rb#sri" => 'sha384-good',
+          'https://mirror.test/npm/a@1.0.0/a.rb' => 'A = 1',
+          'https://mirror.test/npm/a@1.0.0/a.rb#sri' => 'sha384-good',
+        )
+      end
+
+      def expand(files, hashes, **options)
+        described_class.new(resolver(files, integrity: hashes, **options)).expand("require 'a'")
+      end
+
+      it 'fetches a file with the hash the import map gives its URL' do
+        expect(expand(files, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' })).to include('A = 1')
+      end
+
+      it 'raises when the file does not match its hash' do
+        expect { expand(files, { "#{cdn}a@1.0.0/a.rb" => 'sha384-bad' }) }
+          .to raise_error(PicoRubyLibs::Error, /does not match its integrity sha384-bad/)
+      end
+
+      it 'checks a mirror against the hash given for any of its URLs' do
+        files.delete("#{cdn}a@1.0.0/a.rb")
+        hashes = { 'https://mirror.test/npm/a@1.0.0/a.rb' => 'sha384-good' }
+        expect(expand(files, hashes, cdn: [cdn, 'https://mirror.test/npm/'])).to include('A = 1')
+      end
+
+      it 'fetches files without a hash as before' do
+        expect(expand(files, {})).to include('A = 1')
+      end
     end
 
     it "raises when a library's file cannot be loaded" do

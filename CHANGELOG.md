@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `"integrity"` in `text/ruby-importmap` maps library file URLs to Subresource Integrity hashes (`"sha384-..."`). The loader passes the hash to `fetch`, and a file that does not match raises `PicoRubyLibs::Error`. ([#18](https://github.com/itojum/picoruby-libs/issues/18))
 - `"cdn"` in `text/ruby-importmap` accepts a list of CDNs, such as `["https://cdn.jsdelivr.net/npm/", "https://unpkg.com/"]`. `package.json` is taken from the first CDN that serves it, and a file that cannot be fetched from one CDN is fetched from the next. A fetch that fails on the network (a CDN that is down or blocked) now counts as not found instead of raising. ([#30](https://github.com/itojum/picoruby-libs/issues/30))
+
+### Changed
+
+- README: the examples pin exact versions instead of `@latest`, and show an `integrity` attribute on the PicoRuby.wasm script. ([#18](https://github.com/itojum/picoruby-libs/issues/18))
 
 ### Fixed
 

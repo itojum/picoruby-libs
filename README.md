@@ -3,8 +3,7 @@
 `require` PicoRuby libraries published on npm from [PicoRuby.wasm](https://github.com/picoruby/picoruby/tree/master/mrbgems/picoruby-wasm) scripts in the browser. The loader itself is written in Ruby and runs on PicoRuby.wasm.
 
 ```html
-<!-- Pin versions (e.g. picoruby-libs@0.2.0) for anything you publish -->
-<script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs@latest/loader.rb"></script>
+<script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs@0.2.0/loader.rb"></script>
 
 <script type="text/ruby-app">
   require 'mylib'
@@ -12,8 +11,12 @@
   MyLib.hello
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/@picoruby/wasm-wasi@latest/dist/init.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@picoruby/wasm-wasi@4.0.5/dist/init.iife.js"
+        integrity="sha384-0yoK5zRknz3cHusYpYKi4y4VaVdICUVjmeG7RzFfGmYsHxnCiA7H8Mj7qviR7uHX"
+        crossorigin="anonymous"></script>
 ```
+
+Pin exact versions, as above, rather than `@latest`: a new release of the loader or of PicoRuby.wasm can change how your page behaves. See [Integrity](#integrity) for checking the files you load.
 
 Write your code in `text/ruby-app` scripts (inline or with `src`), not `text/ruby`: PicoRuby.wasm starts every `text/ruby` script at once, before its requires could be resolved. The loader starts the `text/ruby-app` scripts itself.
 
@@ -99,6 +102,35 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 ```
 
 Each package's `package.json` is taken from the first CDN that serves it, and its files come from that CDN, or from the next ones when a fetch fails. Every CDN in the list must serve npm packages as `<cdn><name>@<version>/<path>`, as jsDelivr and unpkg do. A name that is not on npm is looked up on every CDN in the list.
+
+## Integrity
+
+To make sure the files you load are the ones you reviewed, give them [Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) hashes:
+
+- **PicoRuby.wasm** (`init.iife.js`) is an ordinary JavaScript `<script>`: add `integrity` and `crossorigin="anonymous"` to its tag, as in the example at the top.
+- **Libraries** are fetched by the loader. List their files under `"integrity"` in a `text/ruby-importmap`, keyed by URL. The loader passes the hash to `fetch`, and a file that does not match is an error (`PicoRubyLibs::Error`):
+
+  ```html
+  <script type="text/ruby-importmap">
+  {
+    "imports": { "mylib": "npm:mylib@1.2.3" },
+    "integrity": {
+      "https://cdn.jsdelivr.net/npm/mylib@1.2.3/lib/mylib.rb": "sha384-..."
+    }
+  }
+  </script>
+  ```
+
+  Use the exact URL, with the exact version: the loader writes it in the `# --- picoruby-libs: name (url) ---` comment around each library. With several CDNs, a hash given for the file on any of them is checked on all of them. Files without a hash are fetched as before.
+- **The loader** (`loader.rb`) is a `text/ruby` script that PicoRuby.wasm fetches itself, so an `integrity` attribute on its tag is not checked. Pin its version, or serve a copy from your own site.
+
+Compute a hash with:
+
+```bash
+curl -sL https://cdn.jsdelivr.net/npm/mylib@1.2.3/lib/mylib.rb | openssl dgst -sha384 -binary | openssl base64 -A
+```
+
+and prefix it with `sha384-`.
 
 ## Limitations
 
