@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The loader dispatches `picoruby-libs:error` on `document` for each script it could not start (`detail` is the message) and `picoruby-libs:ready` once all scripts have been started or skipped. ([#24](https://github.com/itojum/picoruby-libs/issues/24))
+
 ### Fixed
 
 - A script that fails to expand (for example, because a library cannot be fetched) no longer stops every other script from starting. Each `text/ruby-app` script is expanded and started on its own; a failing one is skipped and reported with `console.error`. ([#21](https://github.com/itojum/picoruby-libs/issues/21))

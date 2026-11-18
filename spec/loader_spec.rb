@@ -250,7 +250,7 @@ RSpec.describe PicoRubyLibs do
     # started tasks and reported errors are recorded.
     let(:boot_io_class) do
       Class.new(fake_io_class) do
-        attr_reader :tasks, :errors
+        attr_reader :tasks, :errors, :events
 
         def initialize(files, scripts, imports: {}, cdn: nil)
           super(files)
@@ -259,9 +259,15 @@ RSpec.describe PicoRubyLibs do
           @cdn = cdn
           @tasks = []
           @errors = []
+          @events = []
         end
 
-        def import_map = [@imports, @cdn]
+        def import_map
+          raise PicoRubyLibs::Error, 'bad import map' if @imports == :broken
+          [@imports, @cdn]
+        end
+
+        def dispatch_event(type, detail = nil) = @events << [type, detail]
         def app_scripts = @scripts
         def create_task(code, filename) = @tasks << [code, filename]
         def report_error(message) = @errors << message
@@ -275,8 +281,8 @@ RSpec.describe PicoRubyLibs do
         .merge(package('gone', '1.0.0', 'picoruby' => 'gone.rb'))
     end
 
-    def boot(scripts)
-      io = boot_io_class.new(files, scripts, cdn: cdn)
+    def boot(scripts, imports: {})
+      io = boot_io_class.new(files, scripts, imports: imports, cdn: cdn)
       described_class.boot(io)
       io
     end
@@ -309,6 +315,27 @@ RSpec.describe PicoRubyLibs do
       io = boot([[nil, 'missing.rb', 'https://site.test/missing.rb'], ['puts 2', nil, nil]])
       expect(io.errors).to eq ['picoruby-libs: script #1 (missing.rb) was not started: failed to load https://site.test/missing.rb']
       expect(io.tasks.map(&:first)).to eq ['puts 2']
+    end
+
+    describe 'events' do
+      it 'dispatches picoruby-libs:ready once, after the tasks are created' do
+        io = boot([['puts 1', nil, nil], ['puts 2', nil, nil]])
+        expect(io.events).to eq [['picoruby-libs:ready', nil]]
+      end
+
+      it 'dispatches picoruby-libs:error for each failed script, then ready' do
+        io = boot([[nil, 'x.rb', 'https://site.test/x.rb'], ['puts 2', nil, nil], [nil, 'y.rb', 'https://site.test/y.rb']])
+        expect(io.events.map(&:first)).to eq ['picoruby-libs:error', 'picoruby-libs:error', 'picoruby-libs:ready']
+        expect(io.events[0][1]).to eq io.errors[0]
+        expect(io.events[1][1]).to include('script #3 (y.rb)')
+      end
+
+      it 'dispatches error, then ready, when the scripts cannot be read at all' do
+        io = boot([['puts 1', nil, nil]], imports: :broken)
+        expect(io.tasks).to be_empty
+        expect(io.events).to eq [['picoruby-libs:error', 'picoruby-libs: no script was started: bad import map'],
+                                 ['picoruby-libs:ready', nil]]
+      end
     end
   end
 end
