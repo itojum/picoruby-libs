@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A file inside an npm package (`require 'pkg/lib/x.rb'`, or `"npm:pkg@1/lib/x.rb"` in the import map) is now pinned to the version `package.json` reports, like the package entry. A path without a version uses the version already pinned for the package, or the one the import map gives it, so its files come from the same release. A plain `require` of a path inside a package that is not a PicoRuby library is left to PicoRuby. ([#31](https://github.com/itojum/picoruby-libs/issues/31))
+- A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
+- A file inside an npm package (`require 'pkg/lib/x.rb'`, or `"npm:pkg@1/lib/x.rb"` in the import map) is now pinned to the version `package.json` reports, like the package entry. A package or path without a version uses the release already pinned for the package (by its entry or by a path), and a path also takes the version the import map gives the package, so require order cannot mix releases. A plain `require` of a path inside a package that is not a PicoRuby library is left to PicoRuby. ([#31](https://github.com/itojum/picoruby-libs/issues/31))
 - A file is inlined once even when it is reached both as an npm entry (`require 'pkg'`) and by its URL (`require 'pkg/lib/pkg.rb'` or `require_relative`). This removes the known limitation noted in 0.2.0. ([#31](https://github.com/itojum/picoruby-libs/issues/31))
 
 ## [0.2.0] - 2026-11-19
