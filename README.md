@@ -30,7 +30,7 @@ So the loader resolves requires before your code starts:
 
 Rules:
 
-- Each library is inlined once, at its first `require` in document order. Later requires of it are dropped, and so is a circular one, as in Ruby.
+- Each script gets its own copy of each library it requires, inlined at its first `require` in that script. Later requires of it in the same script are dropped, and so is a circular one, as in Ruby. Scripts run as separate tasks that can interleave at an `await`, so a script never relies on another script having loaded a library first. A library required by several scripts therefore runs its top-level code once per script; its files are fetched once.
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it.
 - A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
@@ -47,7 +47,7 @@ require_relative 'lib/player'   # fetches lib/player.rb next to game.rb
 
 - The path is resolved against the URL of the file that contains the line: the `src` of a `text/ruby-app` script, the URL of a library file, or the page for a script written in the page.
 - `.rb` is added when the name has no extension.
-- Each file is inlined once, at its first require, as with `require`. A file that cannot be fetched is an error.
+- Each file is inlined once per script, at its first require, as with `require`. A file that cannot be fetched is an error.
 - It works inside libraries too, so a library can be published as several files and `require_relative` them from its entry file.
 
 ## Publishing a library

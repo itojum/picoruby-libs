@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A script that fails to expand (for example, because a library cannot be fetched) no longer stops every other script from starting. Each `text/ruby-app` script is expanded and started on its own; a failing one is skipped and reported with `console.error`. ([#21](https://github.com/itojum/picoruby-libs/issues/21))
   - The error names the script (`script #2 (main.rb)`) and, for each `require` / `require_relative` that led to the failure, its name, file and line.
   - A script whose `src` cannot be fetched is reported the same way instead of raising.
+- A library required by several `text/ruby-app` scripts is now inlined into each of them. It used to go only into the first one, so a later script could hit a `NameError` while the first was waiting at an `await` before its `require`. Within one script, a library is still inlined once; across scripts, its top-level code now runs once per script. Files are still fetched once. ([#13](https://github.com/itojum/picoruby-libs/issues/13))
 
 ## [0.2.0] - 2026-11-19
 

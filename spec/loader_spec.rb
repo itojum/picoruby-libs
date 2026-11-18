@@ -166,11 +166,24 @@ RSpec.describe PicoRubyLibs do
         expect(first.index('A = 1')).to be < first.index('puts A + B')
       end
 
-      it 'inlines each library once, at its first require in document order' do
-        expect(second).not_to match(/^\s*require 'b'/)
-        expect(second).not_to include('B = 2')
-        expect(second).to end_with('puts B')
+      it 'inlines into each script the libraries it requires, even if an earlier script has them' do
+        expect(first.scan('B = 2').size).to eq 1
+        expect(second.scan('B = 2').size).to eq 1
+        expect(second.index('B = 2')).to be < second.index('puts B')
       end
+
+      it 'fetches each file once across scripts' do
+        io = fake_io_class.new(libraries("require 'b'\nA = 1\n", "B = 2\n"))
+        r = PicoRubyLibs::Resolver.new(io, cdn: cdn)
+        described_class.new(r).expand_all(["require 'a'", "require 'a'\nrequire 'b'"])
+        expect(io.calls.tally.values).to all(eq 1)
+      end
+    end
+
+    it 'inlines a library once within a script' do
+      out = described_class.new(resolver(libraries('A = 1', 'B = 2'))).expand_all(["require 'a'\nrequire 'a'"])[0]
+      expect(out.scan('A = 1').size).to eq 1
+      expect(out).to include('already loaded')
     end
 
     it 'drops a circular require like Ruby does' do
@@ -298,7 +311,7 @@ RSpec.describe PicoRubyLibs do
       expect(io.errors[0]).to include("from require 'b' at https://site.test/main.rb:2")
     end
 
-    it "inlines in a later script the libraries a failed script had marked as loaded" do
+    it "inlines into a later script the libraries a failed script had inlined" do
       io = boot([["require 'a'\nrequire 'b'", nil, nil], ["require 'a'\nputs A", nil, nil]])
       expect(io.errors[0]).to include("from require 'b' at script #1:2")
       expect(io.tasks.size).to eq 1
