@@ -1,0 +1,19 @@
+{
+  "name": "picoruby-libs",
+  "version": "0.1.0",
+  "description": "Load PicoRuby libraries from npm with `require` in PicoRuby.wasm",
+  "main": "loader.rb",
+  "files": [
+    "loader.rb"
+  ],
+  "scripts": {
+    "test": "bundle exec rspec",
+    "serve": "ruby -run -e httpd . -p 3000"
+  },
+  "keywords": [
+    "picoruby",
+    "picoruby-wasm",
+    "ruby"
+  ],
+  "license": "MIT"
+}
