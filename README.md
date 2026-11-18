@@ -99,14 +99,17 @@ npm run serve              # serves examples/ at http://localhost:3000/examples/
 Releases are made with [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `feat!:` / `BREAKING CHANGE:` for breaking changes).
 
 1. Merge PRs into `main` with **squash merge**, using a Conventional Commits PR title (it becomes the commit message and the changelog entry).
-2. Every push to `main` runs the **Release Please** workflow, which opens or updates a release PR with the version bump and `CHANGELOG.md`.
-3. Merge the release PR. The workflow creates the tag and the GitHub Release.
-4. The **Publish to npm** workflow runs when the release is published, runs the specs and publishes the package with provenance. It can also be run by hand from the Actions tab.
+2. Every push to `main` runs the **Release** workflow, which opens or updates a release PR with the version bump and `CHANGELOG.md`.
+3. Merge the release PR. The same workflow creates the tag and the GitHub Release, then runs the specs and publishes the package to npm with provenance.
+
+To publish the version in `package.json` again without a new release (for example after a failed publish), run the **Release** workflow by hand from the Actions tab with **publish** checked.
+
+The workflow uses only the default `GITHUB_TOKEN`; no personal access token is needed. Because of that, CI does not run on release PRs (GitHub does not start workflows for events made with `GITHUB_TOKEN`), but the publish job runs the specs before publishing.
 
 Setup, once per repository:
 
-- Add a personal access token with `contents` and `pull-requests` write access as the `RELEASE_PLEASE_TOKEN` secret. A release created with the default `GITHUB_TOKEN` would not start the publish workflow.
-- npm trusted publishing is configured on a package that already exists, so publish the first version by hand (`npm publish --access public`), then add this repository's `publish.yml` as a trusted publisher in the package settings on npmjs.com.
+- In **Settings → Actions → General → Workflow permissions**, check **Allow GitHub Actions to create and approve pull requests**, so release-please can open release PRs.
+- npm trusted publishing is configured on a package that already exists, so publish the first version by hand (`npm publish --access public`), then add this repository's `release.yml` as a trusted publisher in the package settings on npmjs.com.
 
 ## License
 
