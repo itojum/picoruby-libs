@@ -85,6 +85,18 @@ module PicoRubyLibs
     found
   end
 
+  # The indentation of the least indented code line. A script written in the
+  # page is often indented as a whole; its top level is at this indentation.
+  def self.top_indent(code)
+    top = nil
+    each_code_line(code) do |line, _i|
+      next if line.strip.empty?
+      indent = line.match(/^[ \t]*/)[0]
+      top = indent if top.nil? || indent.length < top.length
+    end
+    top || ''
+  end
+
   # Yields each line of `code` that is Ruby code, with its index: skips
   # =begin/=end comments and the bodies of heredocs, and stops at __END__.
   # Other multi-line strings (%q{...}, '...') are not tracked.
@@ -293,16 +305,21 @@ module PicoRubyLibs
     # (nil for a script written in the page).
     def expand_all(codes, bases = [])
       out = []
-      codes.each_with_index { |code, i| out << expand(code, bases[i]) }
+      codes.each_with_index do |code, i|
+        out << expand(code, bases[i], bases[i] || "text/ruby-app script ##{i + 1}")
+      end
       out
     end
 
-    def expand(code, base = nil)
+    # `file` names the code in error messages; it defaults to `base`.
+    def expand(code, base = nil, file = nil)
+      file ||= base || '(script)'
       # The file being expanded counts as loaded, so a circular
       # require_relative back to it (e.g. from a script's own src) is dropped.
       @loaded[base] = true if base
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
+      top = PicoRubyLibs.top_indent(code).length
 
       lines = code.split("\n")
       out = []
@@ -314,6 +331,14 @@ module PicoRubyLibs
         lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
         if lib.nil?
           out << line
+        elsif req.indent.length > top
+          # An indented require is likely inside a def or class, where the
+          # inlined code would break (def) or land in another namespace
+          # (class). Refused even when the library is already loaded, so
+          # the outcome does not depend on the order of the scripts.
+          raise Error, "#{file}:#{req.index + 1}: #{line.strip} is indented. " +
+                       'picoruby-libs inlines a library where its require is written, ' +
+                       'so move the require to the top level'
         elsif @loaded[lib.id]
           out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
         else

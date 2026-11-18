@@ -207,7 +207,7 @@ RSpec.describe PicoRubyLibs do
     context 'with a library that requires another one' do
       let(:expanded) do
         files = libraries("require 'js'\nrequire 'b'\nA = 1\n", "B = 2\n")
-        described_class.new(resolver(files)).expand_all(["require 'a'\nputs A + B", "  require 'b'\nputs B"])
+        described_class.new(resolver(files)).expand_all(["require 'a'\nputs A + B", "require 'b'\nputs B"])
       end
       let(:first) { expanded[0] }
       let(:second) { expanded[1] }
@@ -225,6 +225,43 @@ RSpec.describe PicoRubyLibs do
         expect(second).not_to match(/^\s*require 'b'/)
         expect(second).not_to include('B = 2')
         expect(second).to end_with('puts B')
+      end
+    end
+
+    describe 'an indented require' do
+      let(:expander) { described_class.new(resolver(libraries('A = 1', 'B = 2'))) }
+
+      it 'raises with the file and line when it names a library' do
+        code = "class Foo\n  require 'a'\nend"
+        expect { expander.expand_all(["puts 1", code]) }
+          .to raise_error(PicoRubyLibs::Error, /^text\/ruby-app script #2:2: require 'a' is indented.*top level/)
+      end
+
+      it 'raises for a library that is already loaded' do
+        expect { expander.expand_all(["require 'a'", "def f\n  require 'a'\nend"]) }
+          .to raise_error(PicoRubyLibs::Error, /script #2:2/)
+      end
+
+      it 'raises for require_relative, naming the file by its URL' do
+        base = 'https://site.test/game/main.rb'
+        expect { expander.expand_all(["if x\n\trequire_relative 'y'\nend"], [base]) }
+          .to raise_error(PicoRubyLibs::Error, %r{^https://site.test/game/main.rb:2: require_relative 'y'})
+      end
+
+      it 'raises inside a library, naming the library file' do
+        ex = described_class.new(resolver(libraries("def f\n  require 'b'\nend", 'B = 2')))
+        expect { ex.expand("require 'a'") }.to raise_error(PicoRubyLibs::Error, %r{^#{cdn}a@1.0.0/a.rb:2: })
+      end
+
+      it 'is measured from the least indented line of a script indented as a whole' do
+        out = expander.expand("\n    require 'a'\n\n    puts A\n")
+        expect(out).to include('A = 1')
+        expect { expander.expand("    require 'js'\n    def f\n      require 'b'\n    end") }
+          .to raise_error(PicoRubyLibs::Error, /^\(script\):3: require 'b'/)
+      end
+
+      it 'is left alone when it names a built-in' do
+        expect(expander.expand("def f\n  require 'js'\nend")).to eq "def f\n  require 'js'\nend"
       end
     end
 

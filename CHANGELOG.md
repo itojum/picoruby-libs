@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- An indented `require` / `require_relative` of a library (one the loader would inline, not a built-in) now raises `PicoRubyLibs::Error` naming the file and line, instead of inlining the library inside a `def` (a SyntaxError) or a `class` (another namespace). Move it to the top level. A script indented as a whole (as inline scripts usually are) is measured from its least indented line. ([#15](https://github.com/itojum/picoruby-libs/issues/15))
+
 ### Fixed
 
 - A `require` line inside a heredoc (`<<~ID`, `<<-ID`, `<<ID`, quoted or not) is no longer expanded. Other multi-line strings are still not tracked; see Limitations in the README. ([#14](https://github.com/itojum/picoruby-libs/issues/14))
