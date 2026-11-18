@@ -71,10 +71,9 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
-  # The start of a heredoc: `<<~ID`, `<<-ID`, or `<<ID`, with the identifier
-  # optionally quoted. A bare `<<ID` needs an upper-case identifier, so that
-  # `list <<item` (a shift) is not read as one.
-  HEREDOC_START = /<<([~-]?)(["'`]?)([A-Za-z_][A-Za-z0-9_]*)\2/
+  # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
+  # `<<ID`, with the identifier optionally quoted.
+  HEREDOC_START = /^<<([~-]?)(["'`]?)([A-Za-z_][A-Za-z0-9_]*)\2/
 
   # Returns a Require for each require line in `code`.
   def self.find_requires(code)
@@ -95,7 +94,8 @@ module PicoRubyLibs
     code.split("\n").each_with_index do |line, i|
       unless heredocs.empty?
         id, indentable = heredocs[0]
-        heredocs.shift if (indentable ? line.strip : line) == id
+        # Only leading blanks may precede the terminator of <<~ / <<-.
+        heredocs.shift if (indentable ? line.sub(/^[ \t]+/, '') : line) == id
         next
       end
       if in_comment
@@ -108,23 +108,69 @@ module PicoRubyLibs
       end
       break if line.strip == '__END__' && line.start_with?('__END__')
       yield line, i
-      heredocs.concat(heredoc_starts(line)) unless line.strip.start_with?('#')
+      heredocs.concat(heredoc_starts(line))
     end
   end
 
   # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
+  # Skips `<<` inside a '...', "..." or `...` string and after a comment's
+  # `#`, and takes `<<` for a shift when it follows a value (a number, a
+  # closing bracket or quote) or, without a blank between, an identifier.
+  # A bare `<<ID` also needs an upper-case identifier (`list << item`).
   def self.heredoc_starts(line)
     starts = []
-    rest = line
-    while (m = rest.match(HEREDOC_START))
-      flag = m[1]
-      id = m[3]
-      if !flag.empty? || !m[2].empty? || id == id.upcase
-        starts << [id, !flag.empty?]
+    quote = nil
+    prev = ''         # the last character outside strings that is not a blank
+    spaced = true     # whether a blank follows `prev`
+    pos = 0
+    while pos < line.length
+      c = line[pos]
+      if quote
+        if c == '\\'
+          pos += 2
+          next
+        end
+        if c == quote
+          quote = nil
+          prev = c
+          spaced = false
+        end
+        pos += 1
+        next
       end
-      rest = rest[(rest.index(m[0]) + m[0].length)..-1]
+      break if c == '#'
+      if c == '"' || c == "'" || c == '`'
+        quote = c
+      elsif c == '<' && line[pos + 1] == '<'
+        m = line[pos..-1].match(HEREDOC_START)
+        if m && heredoc_context?(prev, spaced) &&
+           (!m[1].empty? || !m[2].empty? || m[3] == m[3].upcase)
+          starts << [m[3], !m[1].empty?]
+          pos += m[0].length
+          prev = 'x'
+          spaced = false
+          next
+        end
+        prev = '<'
+        spaced = false
+        pos += 2
+        next
+      elsif c == ' ' || c == "\t"
+        spaced = true
+      else
+        prev = c
+        spaced = false
+      end
+      pos += 1
     end
     starts
+  end
+
+  # Whether `<<` after `prev` (see heredoc_starts) can start a heredoc.
+  def self.heredoc_context?(prev, spaced)
+    return false if '0123456789)]}"\'`'.include?(prev) && !prev.empty?
+    return spaced if prev.match(/^[A-Za-z0-9_?!]$/)
+    true
   end
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]

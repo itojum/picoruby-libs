@@ -88,9 +88,32 @@ RSpec.describe PicoRubyLibs do
       expect(found).to eq %w[a b c]
     end
 
-    it 'does not take a shift or a comment for a heredoc' do
-      code = "list <<item\nclass << self\n# see <<~EOS\nrequire 'a'\nEOS"
+    it 'does not take a shift, a string or a comment for a heredoc' do
+      code = [
+        'list <<item',
+        'class << self',
+        '# see <<~EOS',
+        'x = 1 # see <<~EOS',
+        'puts "<<~EOS"',
+        "puts 'a <<-EOS', `<<EOS`",
+        'n = 1 <<BITS',
+        'n = (m) <<BITS',
+        'n = m<<BITS',
+        "require 'a'",
+        'EOS',
+        'BITS',
+      ].join("\n")
       expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'closes an indentable heredoc only on a terminator without trailing blanks' do
+      code = "h = <<~EOS\nEOS \nrequire 'literal'\n  EOS\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'finds heredocs after a string or as a method argument' do
+      code = "puts 'x', <<~A\nrequire 'in_a'\nA\nputs <<B\nrequire 'in_b'\nB\nrequire 'c'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['c']
     end
 
     it 'finds require_relative lines and marks them relative' do
