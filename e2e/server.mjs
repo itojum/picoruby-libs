@@ -8,7 +8,7 @@
 // (default: the version the tests are pinned to).
 
 import { readFile } from 'node:fs/promises';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,7 +28,7 @@ const TYPES = {
 
 async function serveFile(route, dir, path, transform = (body) => body) {
   const file = normalize(join(dir, decodeURIComponent(path)));
-  if (!file.startsWith(dir + '/')) return route.fulfill({ status: 403 });
+  if (!file.startsWith(dir + sep)) return route.fulfill({ status: 403 });
   let body;
   try {
     body = await readFile(file);
