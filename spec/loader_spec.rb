@@ -24,6 +24,14 @@ RSpec.describe PicoRubyLibs do
         @files[url]
       end
 
+      def warnings
+        @warnings ||= []
+      end
+
+      def warn(message)
+        warnings << message
+      end
+
       def fetch_json(url)
         @calls << url
         @files[url]
@@ -36,8 +44,21 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  # Unless `imports` is given, every package in `files` is mapped to npm, as
+  # a page opts in to the libraries it uses.
   def resolver(files, **options)
-    PicoRubyLibs::Resolver.new(fake_io_class.new(files), **{ cdn: cdn }.merge(options))
+    PicoRubyLibs::Resolver.new(fake_io_class.new(files), **{ cdn: cdn, imports: npm_imports(files) }.merge(options))
+  end
+
+  def npm_imports(files)
+    imports = {}
+    files.each_key do |url|
+      m = url.match(%r{/npm/(.+)/package\.json$})
+      next unless m
+      name = PicoRubyLibs.parse_spec(m[1])[0]
+      imports[name] = "npm:#{name}"
+    end
+    imports
   end
 
   def package(name, version, fields)
@@ -99,14 +120,38 @@ RSpec.describe PicoRubyLibs do
       expect(r.resolve('mylib').url).to eq "#{cdn}mylib@2.0.0/lib/mylib.rb"
     end
 
-    it 'leaves built-ins, relative paths and non-PicoRuby packages to PicoRuby' do
-      r = resolver(package('leftpad', '1.0.0', 'main' => 'index.js'))
+    describe 'names the import map does not map' do
+      subject(:r) do
+        resolver(
+          package('leftpad', '1.0.0', 'main' => 'index.js')
+            .merge(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb')),
+          imports: {},
+        )
+      end
 
-      expect(r.resolve('js')).to be_nil
-      expect(r.resolve('./x')).to be_nil
-      expect(r.resolve('leftpad')).to be_nil
-      expect(r.resolve('nothing-here')).to be_nil
-      expect(r.io.calls).to all(satisfy { |url| !url.include?('/js/') })
+      it 'leaves built-ins, relative paths and npm packages to PicoRuby' do
+        %w[js ./x leftpad nothing-here mylib mylib/lib/x.rb].each { |name| expect(r.resolve(name)).to be_nil }
+        expect(r.io.calls).to all(end_with('/package.json'))
+        expect(r.io.calls).to all(satisfy { |url| !url.include?('/js/') })
+      end
+
+      it 'suggests mapping a name that is a PicoRuby library on npm' do
+        r.resolve('mylib')
+        r.resolve('leftpad')
+        r.resolve('nothing-here')
+        expect(r.io.warnings).to eq [
+          "picoruby-libs: require 'mylib' is left to PicoRuby. npm has a PicoRuby library named mylib; " \
+          'to load it, add "mylib": "npm:mylib@1.2.3" to "imports" in a text/ruby-importmap script.',
+        ]
+      end
+
+      it 'does not look anything up when the io cannot warn' do
+        io = fake_io_class.new({})
+        io.singleton_class.send(:undef_method, :warn)
+        r = PicoRubyLibs::Resolver.new(io, cdn: cdn)
+        expect(r.resolve('mylib')).to be_nil
+        expect(io.calls).to be_empty
+      end
     end
 
     describe 'a path inside a package' do
@@ -123,10 +168,14 @@ RSpec.describe PicoRubyLibs do
         expect(r.io.calls.count { |url| url.end_with?('package.json') }).to eq 1
       end
 
-      it 'is left to PicoRuby when the package is missing or not a PicoRuby library' do
+      it 'is loaded from a mapped package even when it is not a PicoRuby library' do
         r = resolver(package('leftpad', '1.0.0', 'main' => 'index.js'))
-        expect(r.resolve('leftpad/x.rb')).to be_nil
-        expect(r.resolve('nothing-here/x.rb')).to be_nil
+        expect(r.resolve('leftpad/x.rb').url).to eq "#{cdn}leftpad@1.0.0/x.rb"
+      end
+
+      it 'raises when a mapped package does not exist' do
+        r = resolver({}, imports: { 'gone' => 'npm:gone' })
+        expect { r.resolve('gone/x.rb') }.to raise_error(PicoRubyLibs::Error, /not found/)
       end
     end
 

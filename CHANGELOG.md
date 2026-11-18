@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **npm resolution is opt-in.** The loader loads from npm only the names that `"imports"` in a `text/ruby-importmap` maps to npm (`"mylib": "npm:mylib@1.2.3"`), and files inside those packages (`require 'mylib/lib/x.rb'`). Any other name is left to PicoRuby, as a name that is not on npm was before. This stops a package published under the name of a gem missing from the built-in list from running on the page (dependency confusion). When an unmapped name is a PicoRuby library on npm, the loader prints the line to add to the import map with `console.warn`. ([#16](https://github.com/itojum/picoruby-libs/issues/16))
+
+  **Migrating:** for every npm library the page requires, including the libraries those require, add `"name": "npm:name@version"` to `"imports"` in a `text/ruby-importmap` script. See "Migrating from 0.2.0" in the README.
+
 ### Added
 
 - `"integrity"` in `text/ruby-importmap` maps library file URLs to Subresource Integrity hashes (`"sha384-..."`). The loader passes the hash to `fetch`, and a file that does not match raises `PicoRubyLibs::Error`. ([#18](https://github.com/itojum/picoruby-libs/issues/18))
