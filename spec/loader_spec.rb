@@ -80,6 +80,18 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.import_map_error' do
+    it 'names the import map by its position and id, with the original error' do
+      expect(described_class.import_map_error(2, 'libs', 'Unexpected token }'))
+        .to eq 'text/ruby-importmap #2 (id="libs"): invalid JSON: Unexpected token }'
+    end
+
+    it 'leaves out the id when the script has none' do
+      expect(described_class.import_map_error('1', '', 'expected a JSON object'))
+        .to eq 'text/ruby-importmap #1: invalid JSON: expected a JSON object'
+    end
+  end
+
   describe PicoRubyLibs::Resolver do
     it 'resolves the "picoruby" field, pinned to the version package.json reports' do
       r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
