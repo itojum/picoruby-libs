@@ -3,7 +3,8 @@
 `require` PicoRuby libraries published on npm from [PicoRuby.wasm](https://github.com/picoruby/picoruby/tree/master/mrbgems/picoruby-wasm) scripts in the browser. The loader itself is written in Ruby and runs on PicoRuby.wasm.
 
 ```html
-<script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs/loader.rb"></script>
+<!-- Pin versions (e.g. picoruby-libs@0.1.0) for anything you publish -->
+<script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs@latest/loader.rb"></script>
 
 <script type="text/ruby-app">
   require 'mylib'
@@ -92,6 +93,20 @@ bundle install
 bundle exec rspec          # or: npm test
 npm run serve              # serves examples/ at http://localhost:3000/examples/
 ```
+
+## Releasing
+
+Releases are made with [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `feat!:` / `BREAKING CHANGE:` for breaking changes).
+
+1. Merge PRs into `main` with **squash merge**, using a Conventional Commits PR title (it becomes the commit message and the changelog entry).
+2. Every push to `main` runs the **Release Please** workflow, which opens or updates a release PR with the version bump and `CHANGELOG.md`.
+3. Merge the release PR. The workflow creates the tag and the GitHub Release.
+4. The **Publish to npm** workflow runs when the release is published, runs the specs and publishes the package with provenance. It can also be run by hand from the Actions tab.
+
+Setup, once per repository:
+
+- Add a personal access token with `contents` and `pull-requests` write access as the `RELEASE_PLEASE_TOKEN` secret. A release created with the default `GITHUB_TOKEN` would not start the publish workflow.
+- npm trusted publishing is configured on a package that already exists, so publish the first version by hand (`npm publish --access public`), then add this repository's `publish.yml` as a trusted publisher in the package settings on npmjs.com.
 
 ## License
 
