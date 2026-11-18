@@ -3,7 +3,7 @@
 `require` PicoRuby libraries published on npm from [PicoRuby.wasm](https://github.com/picoruby/picoruby/tree/master/mrbgems/picoruby-wasm) scripts in the browser. The loader itself is written in Ruby and runs on PicoRuby.wasm.
 
 ```html
-<!-- Pin versions (e.g. picoruby-libs@0.1.0) for anything you publish -->
+<!-- Pin versions (e.g. picoruby-libs@0.2.0) for anything you publish -->
 <script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs@latest/loader.rb"></script>
 
 <script type="text/ruby-app">
@@ -112,7 +112,7 @@ npm run serve              # serves examples/ at http://localhost:3000/examples/
 
 The version is the `version` in `package.json`. Publishing a GitHub Release whose tag is that version publishes the package to npm.
 
-1. Bump the version in `package.json` in a PR and merge it:
+1. Bump the version in `package.json` and move the `Unreleased` entries in `CHANGELOG.md` under that version, in a PR, and merge it:
 
    ```bash
    npm version minor --no-git-tag-version   # or patch / major, or edit package.json
