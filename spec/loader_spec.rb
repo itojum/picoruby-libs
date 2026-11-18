@@ -61,6 +61,38 @@ RSpec.describe PicoRubyLibs do
       expect(found).to eq [[0, 'mylib'], [1, 'js'], [2, 'foo'], [8, './local']]
     end
 
+    it 'skips the bodies of heredocs' do
+      code = [
+        'HELP = <<~TXT',
+        "  require 'in_squiggly'",
+        'TXT',
+        "require 'a'",
+        "x = <<-'EOS'",
+        "require 'in_dash'",
+        '  EOS',
+        'y = <<RAW',
+        "require 'in_bare'",
+        '  RAW',
+        "require 'still_in_bare'",
+        'RAW',
+        "require 'b'",
+        'foo(<<~ONE, <<~"TWO")',
+        "  require 'in_one'",
+        'ONE',
+        "  require 'in_two'",
+        'TWO',
+        "require 'c'",
+      ].join("\n")
+
+      found = described_class.find_requires(code).map(&:name)
+      expect(found).to eq %w[a b c]
+    end
+
+    it 'does not take a shift or a comment for a heredoc' do
+      code = "list <<item\nclass << self\n# see <<~EOS\nrequire 'a'\nEOS"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
     it 'finds require_relative lines and marks them relative' do
       code = "require_relative 'a'\n  require_relative('../b.rb') # c\nrequire 'c'"
       found = described_class.find_requires(code).map { |r| [r.index, r.name, r.relative?] }

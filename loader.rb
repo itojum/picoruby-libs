@@ -71,11 +71,33 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
+  # The start of a heredoc: `<<~ID`, `<<-ID`, or `<<ID`, with the identifier
+  # optionally quoted. A bare `<<ID` needs an upper-case identifier, so that
+  # `list <<item` (a shift) is not read as one.
+  HEREDOC_START = /<<([~-]?)(["'`]?)([A-Za-z_][A-Za-z0-9_]*)\2/
+
   # Returns a Require for each require line in `code`.
   def self.find_requires(code)
     found = []
+    each_code_line(code) do |line, i|
+      m = line.match(REQUIRE_LINE)
+      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+    end
+    found
+  end
+
+  # Yields each line of `code` that is Ruby code, with its index: skips
+  # =begin/=end comments and the bodies of heredocs, and stops at __END__.
+  # Other multi-line strings (%q{...}, '...') are not tracked.
+  def self.each_code_line(code)
     in_comment = false
+    heredocs = [] # [[identifier, indentable], ...] still to be closed
     code.split("\n").each_with_index do |line, i|
+      unless heredocs.empty?
+        id, indentable = heredocs[0]
+        heredocs.shift if (indentable ? line.strip : line) == id
+        next
+      end
       if in_comment
         in_comment = false if line.start_with?('=end')
         next
@@ -85,10 +107,24 @@ module PicoRubyLibs
         next
       end
       break if line.strip == '__END__' && line.start_with?('__END__')
-      m = line.match(REQUIRE_LINE)
-      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+      yield line, i
+      heredocs.concat(heredoc_starts(line)) unless line.strip.start_with?('#')
     end
-    found
+  end
+
+  # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
+  def self.heredoc_starts(line)
+    starts = []
+    rest = line
+    while (m = rest.match(HEREDOC_START))
+      flag = m[1]
+      id = m[3]
+      if !flag.empty? || !m[2].empty? || id == id.upcase
+        starts << [id, !flag.empty?]
+      end
+      rest = rest[(rest.index(m[0]) + m[0].length)..-1]
+    end
+    starts
   end
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]
