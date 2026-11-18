@@ -1,0 +1,45 @@
+name: Publish to npm
+
+# Runs when a GitHub Release is published. The version comes from the
+# release's tag (v1.2.3 -> 1.2.3), so package.json does not need a bump.
+# To publish a tag again, run this workflow by hand with the tag selected
+# under "Use workflow from".
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # npm trusted publishing and provenance
+    steps:
+      - name: Check the tag
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::Run this workflow on a release tag (v1.2.3), not on ${{ github.ref_name }}."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - run: bundle exec rspec
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+
+      - name: Set the version from the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: npm pkg set version="${TAG#v}"
+
+      - run: npm publish --provenance --access public
