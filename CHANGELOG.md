@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `require_relative 'x'` is expanded like a library `require`: the loader fetches `x.rb` and inlines it before the script runs. ([#8](https://github.com/itojum/picoruby-libs/pull/8))
   - The path is resolved against the URL of the file that contains the line: the `src` of a `text/ruby-app` script, the URL of a library file, or the page for an inline script.
   - `.rb` is appended when the name has no extension; an explicit extension is kept.
-  - Each file is inlined once. Circular requires are dropped.
+  - Each file is inlined once per URL. Circular requires are dropped.
+  - Known limitation: npm entry files are tracked by package name and `require_relative` files by URL, so a file loaded both through `require 'pkg'` and through `require_relative` is inlined twice and its top-level code runs twice.
   - A file that cannot be fetched raises `PicoRubyLibs::Error`.
   - It also works inside npm libraries, so a library can ship as several files.
 
