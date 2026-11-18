@@ -20,7 +20,7 @@ jobs:
       - name: Check the tag
         if: github.ref_type != 'tag'
         run: |
-          echo "::error::Run this workflow on a release tag (v1.2.3), not on ${{ github.ref_name }}."
+          echo "::error::Run this workflow on a release tag (v1.2.3), not on ${GITHUB_REF_NAME}."
           exit 1
 
       - uses: actions/checkout@v4
