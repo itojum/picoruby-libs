@@ -20,12 +20,15 @@ async function open(page, path) {
 
 // Waits until PicoRuby has printed every line of `expected`.
 async function waitForLogs(run, expected) {
-  await expect
-    .poll(() => expected.filter((line) => !run.logs.includes(line)), {
-      message: `PicoRuby printed ${JSON.stringify(run.logs)}; errors: ${JSON.stringify(run.errors)}`,
-      timeout: 30_000,
-    })
-    .toEqual([]);
+  try {
+    await expect
+      .poll(() => expected.filter((line) => !run.logs.includes(line)), { timeout: 30_000 })
+      .toEqual([]);
+  } catch (err) {
+    // Built after the wait, so it shows what arrived while polling.
+    err.message += `\nPicoRuby printed ${JSON.stringify(run.logs)}; errors: ${JSON.stringify(run.errors)}`;
+    throw err;
+  }
 }
 
 test.beforeAll(() => {
@@ -58,11 +61,13 @@ test('requires npm libraries through the import map, with their dependencies and
   expect(npm).toEqual([]);
 });
 
-test('expands require_relative in a src script and maps a name to a URL', async ({ page }) => {
+test('expands require_relative against the src of a script and maps a name to a URL', async ({ page }) => {
   const run = await open(page, '/relative.html');
   await waitForLogs(run, ['relative: 42', 'local: vendor/local.rb', 'done']);
   expect(run.errors).toEqual([]);
-  expect(run.requests).toContain(`${SITE}/lib/helper.rb`);
+  // Resolved against the script's src (app/game.rb), not the page.
+  expect(run.requests).toContain(`${SITE}/app/lib/helper.rb`);
+  expect(run.requests).not.toContain(`${SITE}/lib/helper.rb`);
   expect(run.requests).toContain(`${SITE}/vendor/local.rb`);
 });
 
