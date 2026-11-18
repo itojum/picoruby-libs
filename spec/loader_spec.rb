@@ -185,6 +185,7 @@ RSpec.describe PicoRubyLibs do
           'https://site.test/game/src/lib/util.rb' => "require_relative '../const.rb'\nU = C + 1",
           'https://site.test/game/src/const.rb' => "require_relative 'lib/util'\nC = 1",
           'https://site.test/game/top.rb' => 'T = 1',
+          'https://site.test/game/src/back.rb' => "require_relative '../main'\nBACK = 1",
           "#{cdn}a@1.0.0/a.rb" => "require_relative 'parts/x'\nA = X",
           "#{cdn}a@1.0.0/parts/x.rb" => 'X = 1',
         }.merge(package('a', '1.0.0', 'picoruby' => 'a.rb'))
@@ -205,6 +206,21 @@ RSpec.describe PicoRubyLibs do
       it 'resolves inside an npm library against its file URL' do
         out = expander.expand("require 'a'")
         expect(out.index('X = 1')).to be < out.index('A = X')
+      end
+
+      it "drops a circular require_relative back to the script's own src" do
+        out = expander.expand_all(["require_relative 'src/back'\nMAIN = 1"], ['https://site.test/game/main.rb'])[0]
+        expect(out.scan('MAIN = 1').size).to eq 1
+        expect(out).to include('already loaded')
+      end
+
+      it 'keeps an explicit extension and adds .rb only when there is none' do
+        r = resolver({})
+        base = 'https://site.test/game/main.rb'
+        expect(r.resolve_relative('parts/helper.ruby', base).url).to eq 'https://site.test/game/parts/helper.ruby'
+        expect(r.resolve_relative('parts/helper.rb', base).url).to eq 'https://site.test/game/parts/helper.rb'
+        expect(r.resolve_relative('../v1.2/x', base).url).to eq 'https://site.test/v1.2/x.rb'
+        expect(r.resolve_relative('./x', base).url).to eq 'https://site.test/game/x.rb'
       end
 
       it 'raises when the file does not exist' do

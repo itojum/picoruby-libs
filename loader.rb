@@ -142,10 +142,12 @@ module PicoRubyLibs
     end
 
     # The Library of `require_relative name` in the file at `base` (a URL, or
-    # nil for a script written in the page). Like Ruby, ".rb" is added when
-    # the name has no extension.
+    # nil for a script written in the page). ".rb" is added when the last
+    # path component has no extension.
     def resolve_relative(name, base)
-      path = name.end_with?('.rb') ? name : name + '.rb'
+      last = name.split('/').last || ''
+      dot = last.rindex('.')
+      path = dot && dot > 0 ? name : name + '.rb'
       url = @io.absolute_url(path, base)
       Library.new(url, url)
     end
@@ -214,6 +216,9 @@ module PicoRubyLibs
     end
 
     def expand(code, base = nil)
+      # The file being expanded counts as loaded, so a circular
+      # require_relative back to it (e.g. from a script's own src) is dropped.
+      @loaded[base] = true if base
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
 
