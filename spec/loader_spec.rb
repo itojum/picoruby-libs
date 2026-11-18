@@ -233,5 +233,82 @@ RSpec.describe PicoRubyLibs do
       expander = described_class.new(resolver(libraries(nil, '')))
       expect { expander.expand("require 'a'") }.to raise_error(PicoRubyLibs::Error, /failed to load/)
     end
+
+    it 'names each require that led to a failure, with its file and line' do
+      expander = described_class.new(resolver(libraries("require 'js'\nrequire 'b'", nil)))
+      expect { expander.expand("x = 1\nrequire 'a'", nil, 'script #1') }.to raise_error(
+        PicoRubyLibs::Error,
+        "failed to load #{cdn}b@1.0.0/b.rb\n" \
+        "  from require 'b' at #{cdn}a@1.0.0/a.rb:2\n" \
+        "  from require 'a' at script #1:2",
+      )
+    end
+  end
+
+  describe '.boot' do
+    # Stands in for BrowserIO: scripts are [code, filename, url] and the
+    # started tasks and reported errors are recorded.
+    let(:boot_io_class) do
+      Class.new(fake_io_class) do
+        attr_reader :tasks, :errors
+
+        def initialize(files, scripts, imports: {}, cdn: nil)
+          super(files)
+          @scripts = scripts
+          @imports = imports
+          @cdn = cdn
+          @tasks = []
+          @errors = []
+        end
+
+        def import_map = [@imports, @cdn]
+        def app_scripts = @scripts
+        def create_task(code, filename) = @tasks << [code, filename]
+        def report_error(message) = @errors << message
+      end
+    end
+
+    let(:files) do
+      package('a', '1.0.0', 'picoruby' => 'a.rb')
+        .merge(package('b', '1.0.0', 'picoruby' => 'b.rb'))
+        .merge("#{cdn}a@1.0.0/a.rb" => 'A = 1', "#{cdn}b@1.0.0/b.rb" => "require 'gone'\nB = 1")
+        .merge(package('gone', '1.0.0', 'picoruby' => 'gone.rb'))
+    end
+
+    def boot(scripts)
+      io = boot_io_class.new(files, scripts, cdn: cdn)
+      described_class.boot(io)
+      io
+    end
+
+    it 'starts each script as its own task' do
+      io = boot([["require 'a'\nputs A", nil, nil], ['puts 2', 'two.rb', 'https://site.test/two.rb']])
+      expect(io.tasks.map(&:last)).to eq [nil, 'two.rb']
+      expect(io.tasks[0][0]).to include('A = 1')
+      expect(io.errors).to be_empty
+    end
+
+    it 'skips only the script that fails, and reports where it failed' do
+      io = boot([['puts 1', nil, nil], ["\nrequire 'b'", 'main.rb', 'https://site.test/main.rb'], ['puts 3', nil, nil]])
+      expect(io.tasks.map(&:first)).to eq ['puts 1', 'puts 3']
+      expect(io.errors.size).to eq 1
+      expect(io.errors[0]).to start_with('picoruby-libs: script #2 (main.rb) was not started: ')
+      expect(io.errors[0]).to include("failed to load #{cdn}gone@1.0.0/gone.rb")
+      expect(io.errors[0]).to include("from require 'gone' at #{cdn}b@1.0.0/b.rb:1")
+      expect(io.errors[0]).to include("from require 'b' at https://site.test/main.rb:2")
+    end
+
+    it "inlines in a later script the libraries a failed script had marked as loaded" do
+      io = boot([["require 'a'\nrequire 'b'", nil, nil], ["require 'a'\nputs A", nil, nil]])
+      expect(io.errors[0]).to include("from require 'b' at script #1:2")
+      expect(io.tasks.size).to eq 1
+      expect(io.tasks[0][0]).to include('A = 1')
+    end
+
+    it 'reports a script whose src cannot be fetched and starts the others' do
+      io = boot([[nil, 'missing.rb', 'https://site.test/missing.rb'], ['puts 2', nil, nil]])
+      expect(io.errors).to eq ['picoruby-libs: script #1 (missing.rb) was not started: failed to load https://site.test/missing.rb']
+      expect(io.tasks.map(&:first)).to eq ['puts 2']
+    end
   end
 end
