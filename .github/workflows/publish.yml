@@ -44,11 +44,14 @@ jobs:
 
       # npm refuses to publish a prerelease (1.2.3-rc.1) without an explicit
       # dist-tag, so prereleases go to "next" and leave "latest" alone.
+      # Build metadata (1.2.3+build-1) is dropped first: a hyphen there does
+      # not make a prerelease.
       - name: Publish
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          if [[ "${TAG#v}" == *-* ]]; then
+          VERSION="${TAG#v}"
+          if [[ "${VERSION%%+*}" == *-* ]]; then
             npm publish --provenance --access public --tag next
           else
             npm publish --provenance --access public
