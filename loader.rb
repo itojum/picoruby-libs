@@ -219,11 +219,13 @@ module PicoRubyLibs
     end
 
     # Expands one text/ruby-app script, inlining every library it requires
-    # whether or not an earlier script has it too. `where` names the script
-    # in error messages.
+    # whether or not an earlier script has it too, and yields the result (to
+    # start it). `where` names the script in error messages.
     def expand_script(code, base = nil, where = nil)
       @loaded = {}
-      expand(code, base, where)
+      out = expand(code, base, where)
+      yield out if block_given?
+      out
     end
 
     # A failed require raises an Error whose message ends with a
@@ -283,6 +285,14 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # The message for the `index`th (1-based, Integer or String) text/ruby-importmap script that
+  # failed to parse. `id` is the script's id attribute ('' when it has none).
+  def self.import_map_error(index, id, message)
+    where = "text/ruby-importmap ##{index}"
+    where += " (id=\"#{id}\")" unless id.empty?
+    "#{where}: invalid JSON: #{message}"
+  end
+
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
     def fetch_text(url)
@@ -314,19 +324,34 @@ module PicoRubyLibs
     end
 
     # [imports Hash, cdn or nil] from every text/ruby-importmap script.
+    # Raises Error naming the script when one is not a JSON object.
     def import_map
       map = JS.eval(<<~JS)
         (() => {
-          const map = { imports: {}, cdn: null };
-          document.querySelectorAll('#{IMPORT_MAP}').forEach(el => {
-            const json = JSON.parse(el.textContent || '{}');
+          const map = { imports: {}, cdn: null, error: null };
+          const els = document.querySelectorAll('#{IMPORT_MAP}');
+          for (let i = 0; i < els.length; i++) {
+            const el = els[i];
+            let json;
+            try {
+              json = JSON.parse(el.textContent || '{}');
+            } catch (e) {
+              return { error: { index: String(i + 1), id: el.id, message: String(e.message) } };
+            }
+            if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+              return { error: { index: String(i + 1), id: el.id, message: 'expected a JSON object' } };
+            }
             Object.assign(map.imports, json.imports || {});
             if (json.cdn) map.cdn = json.cdn;
-          });
+          }
           map.entries = Object.entries(map.imports);
           return map;
         })()
       JS
+      error = map[:error]
+      unless error.nil?
+        raise Error, PicoRubyLibs.import_map_error(error[:index].to_s, error[:id].to_s, error[:message].to_s)
+      end
       imports = {}
       map[:entries].to_a.each { |pair| imports[pair[0]] = pair[1] }
       [imports, map[:cdn]]
@@ -390,7 +415,7 @@ module PicoRubyLibs
       label = "script ##{i + 1}" + (filename ? " (#{filename})" : '')
       begin
         raise Error, "failed to load #{url}" if code.nil?
-        io.create_task(expander.expand_script(code, url, url || "script ##{i + 1}"), filename)
+        expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
       rescue => e
         io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
       end
