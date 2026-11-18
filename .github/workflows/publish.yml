@@ -1,7 +1,8 @@
 name: Publish to npm
 
-# Runs when a GitHub Release is published. The version comes from the
-# release's tag (v1.2.3 -> 1.2.3), so package.json does not need a bump.
+# Runs when a GitHub Release is published. The version is the one in
+# package.json; the release's tag must be that version with a "v" prefix
+# (package.json 1.2.3 -> tag v1.2.3), or nothing is published.
 # To publish a tag again, run this workflow by hand with the tag selected
 # under "Use workflow from".
 
@@ -20,10 +21,20 @@ jobs:
       - name: Check the tag
         if: github.ref_type != 'tag'
         run: |
-          echo "::error::Run this workflow on a release tag (v1.2.3), not on ${{ github.ref_name }}."
+          echo "::error::Run this workflow on a release tag (v1.2.3), not on ${GITHUB_REF_NAME}."
           exit 1
 
       - uses: actions/checkout@v4
+
+      - name: Check the tag matches package.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json version $VERSION. Tag the commit that sets the version as v$VERSION."
+            exit 1
+          fi
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -37,20 +48,13 @@ jobs:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
 
-      - name: Set the version from the tag
-        env:
-          TAG: ${{ github.ref_name }}
-        run: npm pkg set version="${TAG#v}"
-
       # npm refuses to publish a prerelease (1.2.3-rc.1) without an explicit
       # dist-tag, so prereleases go to "next" and leave "latest" alone.
       # Build metadata (1.2.3+build-1) is dropped first: a hyphen there does
       # not make a prerelease.
       - name: Publish
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
-          VERSION="${TAG#v}"
+          VERSION=$(jq -r .version package.json)
           if [[ "${VERSION%%+*}" == *-* ]]; then
             npm publish --provenance --access public --tag next
           else
