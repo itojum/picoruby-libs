@@ -48,4 +48,15 @@ jobs:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
 
-      - run: npm publish --provenance --access public
+      # npm refuses to publish a prerelease (1.2.3-rc.1) without an explicit
+      # dist-tag, so prereleases go to "next" and leave "latest" alone.
+      # Build metadata (1.2.3+build-1) is dropped first: a hyphen there does
+      # not make a prerelease.
+      - name: Publish
+        run: |
+          VERSION=$(jq -r .version package.json)
+          if [[ "${VERSION%%+*}" == *-* ]]; then
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public
+          fi
