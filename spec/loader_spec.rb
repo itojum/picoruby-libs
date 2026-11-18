@@ -172,6 +172,17 @@ RSpec.describe PicoRubyLibs do
         expect(r.resolve('mylib/lib/extra.rb').url).to eq "#{cdn}mylib@2.0.0/lib/extra.rb"
       end
 
+      it 'keeps an unversioned package entry on the release a path already pinned' do
+        files = {
+          "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.4.0', 'picoruby' => 'lib/pkg.rb' },
+          "#{cdn}pkg/package.json" => { 'name' => 'pkg', 'version' => '2.0.0', 'picoruby' => 'lib/pkg.rb' },
+        }
+        r = resolver(files, imports: { 'sub' => 'npm:pkg@1/lib/sub.rb' })
+        expect(r.resolve('sub').url).to eq "#{cdn}pkg@1.4.0/lib/sub.rb"
+        expect(r.resolve('pkg').url).to eq "#{cdn}pkg@1.4.0/lib/pkg.rb"
+        expect(r.resolve('pkg/lib/extra.rb').url).to eq "#{cdn}pkg@1.4.0/lib/extra.rb"
+      end
+
       it 'leaves a name mapped to false to PicoRuby' do
         expect(r.resolve('skipme')).to be_nil
       end

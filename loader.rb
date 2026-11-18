@@ -174,12 +174,16 @@ module PicoRubyLibs
     # Every file is fetched from the exact version package.json reports, so
     # "latest" resolves once and every file of a package comes from the same
     # release. A file inside a package ("pkg/lib/x.rb") is pinned the same
-    # way, and a path without a version uses the version already pinned for
-    # the package (or the one the import map gives it).
+    # way.
     def resolve_npm(spec, require_name, strict)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
-      version ||= @pinned[name] || mapped_version(name) unless path.empty?
+      # Without a version, reuse the release already pinned for the package,
+      # whether by its entry or by a path, so require order cannot mix
+      # releases. A path also takes the version the import map gives the
+      # package.
+      version ||= @pinned[name]
+      version ||= mapped_version(name) unless path.empty?
       pkg = package_json(name, version)
       if pkg.nil?
         raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if strict
