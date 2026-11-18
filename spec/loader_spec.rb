@@ -9,11 +9,16 @@ RSpec.describe PicoRubyLibs do
   # package.json.
   let(:fake_io_class) do
     Class.new do
-      attr_reader :calls
+      attr_reader :calls, :prefetches
 
       def initialize(files)
         @files = files
         @calls = []
+        @prefetches = []
+      end
+
+      def prefetch(urls)
+        @prefetches << urls
       end
 
       def fetch_text(url)
@@ -177,6 +182,38 @@ RSpec.describe PicoRubyLibs do
         r = PicoRubyLibs::Resolver.new(io, cdn: cdn)
         described_class.new(r).expand_all(["require 'a'", "require 'a'\nrequire 'b'"])
         expect(io.calls.tally.values).to all(eq 1)
+      end
+    end
+
+    describe 'prefetching' do
+      let(:files) do
+        libraries("require 'b'\nA = 1", 'B = 2')
+          .merge(package('c', '1.0.0', 'picoruby' => 'c.rb'))
+          .merge("#{cdn}c@1.0.0/c.rb" => 'C = 3')
+      end
+
+      it "prefetches all of a file's requires together, before reading them, keeping the order" do
+        io = fake_io_class.new(files)
+        out = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn))
+                             .expand_script("require 'a'\nrequire 'js'\nrequire 'c'\nrequire 'a'")
+        expect(io.prefetches).to eq [["#{cdn}a@1.0.0/a.rb", "#{cdn}c@1.0.0/c.rb"], ["#{cdn}b@1.0.0/b.rb"]]
+        expect(io.calls.index("#{cdn}c@1.0.0/c.rb")).to be > io.calls.index("#{cdn}b@1.0.0/b.rb")
+        expect(out.index('B = 2')).to be < out.index('A = 1')
+        expect(out.index('A = 1')).to be < out.index('C = 3')
+      end
+
+      it 'does not prefetch files it has already read' do
+        io = fake_io_class.new(files)
+        expander = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn))
+        expander.expand_all(["require 'a'", "require 'a'\nrequire 'c'"])
+        expect(io.prefetches.flatten.tally.values).to all(eq 1)
+      end
+
+      it 'reports errors in file order even when a later require fails to resolve first' do
+        io = fake_io_class.new(files.merge("#{cdn}a@1.0.0/a.rb" => nil))
+        r = PicoRubyLibs::Resolver.new(io, cdn: cdn, imports: { 'bad' => 'npm:missing' })
+        expect { described_class.new(r).expand_script("require 'a'\nrequire 'bad'") }
+          .to raise_error(PicoRubyLibs::Error, /failed to load .*a\.rb\n  from require 'a' at script:1/)
       end
     end
 
