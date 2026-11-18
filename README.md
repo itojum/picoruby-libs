@@ -96,10 +96,16 @@ npm run serve              # serves examples/ at http://localhost:3000/examples/
 
 ## Releasing
 
-Publishing a GitHub Release publishes the package to npm.
+The version is the `version` in `package.json`. Publishing a GitHub Release whose tag is that version publishes the package to npm.
 
-1. Create a release on GitHub with a new tag named after the version, such as `v0.2.0`. **Generate release notes** fills in the merged PRs.
-2. When the release is published, the **Publish to npm** workflow runs the specs and publishes the package with provenance. The version comes from the tag, so `package.json` does not need a bump.
+1. Bump the version in `package.json` in a PR and merge it:
+
+   ```bash
+   npm version minor --no-git-tag-version   # or patch / major, or edit package.json
+   ```
+
+2. Create a release on GitHub with a new tag `v` + that version (`0.2.0` → `v0.2.0`) on `main`. **Generate release notes** fills in the merged PRs.
+3. When the release is published, the **Publish to npm** workflow checks that the tag matches `package.json`, runs the specs and publishes the package with provenance. A tag that does not match publishes nothing.
 
 To publish a tag again (for example after a failed publish), run **Publish to npm** by hand from the Actions tab with that tag selected under **Use workflow from**.
 
