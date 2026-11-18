@@ -264,6 +264,19 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # The file name PicoRuby reports in errors for the `n`th (1-based)
+  # text/ruby-app script on the page: the last segment of the `src` URL's
+  # path, without query or fragment, or `inline-n.rb` for an inline script.
+  def self.script_filename(src, n)
+    path = src.split('#').first.to_s.split('?').first.to_s
+    name = path[-1] == '/' ? '' : path.split('/').last.to_s
+    if name.empty?
+      src.empty? ? "inline-#{n}.rb" : "script-#{n}.rb"
+    else
+      name
+    end
+  end
+
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
     def fetch_text(url)
@@ -313,18 +326,21 @@ module PicoRubyLibs
       [imports, map[:cdn]]
     end
 
-    # [[code, filename or nil, URL or nil]] for each text/ruby-app script, in
+    # [[code, filename, URL or nil]] for each text/ruby-app script, in
     # order. The URL (the `src`, made absolute by the DOM) is the base of the
     # script's require_relative.
     def app_scripts
+      n = 0
       JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
+        n += 1
         src = el[:src].to_s
+        name = PicoRubyLibs.script_filename(src, n)
         if src.empty?
-          [el[:textContent].to_s, nil, nil]
+          [el[:textContent].to_s, name, nil]
         else
           code = fetch_text(src)
           raise Error, "failed to load #{src}" if code.nil?
-          [code, src.split('/').last, src]
+          [code, name, src]
         end
       end
     end

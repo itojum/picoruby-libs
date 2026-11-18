@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Inline `text/ruby-app` scripts get a file name from their position on the page (`inline-1.rb`, …), so errors in them say where they come from. The file name of a script with `src` no longer keeps the query string or fragment (`app.rb?v=2` → `app.rb`). ([#23](https://github.com/itojum/picoruby-libs/issues/23))
+
 ## [0.2.0] - 2026-11-19
 
 ### Added

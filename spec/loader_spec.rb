@@ -80,6 +80,24 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.script_filename' do
+    it 'names an inline script by its position on the page' do
+      expect(described_class.script_filename('', 1)).to eq 'inline-1.rb'
+      expect(described_class.script_filename('', 3)).to eq 'inline-3.rb'
+    end
+
+    it 'takes the last segment of the src path, without query or fragment' do
+      expect(described_class.script_filename('https://site.test/game/app.rb', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb?v=2', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb#main', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb?a=b/c#d/e', 1)).to eq 'app.rb'
+    end
+
+    it 'falls back to the position when the path ends in a slash' do
+      expect(described_class.script_filename('https://site.test/game/?v=2', 2)).to eq 'script-2.rb'
+    end
+  end
+
   describe PicoRubyLibs::Resolver do
     it 'resolves the "picoruby" field, pinned to the version package.json reports' do
       r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
