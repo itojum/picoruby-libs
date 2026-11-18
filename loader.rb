@@ -189,12 +189,16 @@ module PicoRubyLibs
     # Every file is fetched from the exact version package.json reports, so
     # "latest" resolves once and every file of a package comes from the same
     # release. A file inside a package ("pkg/lib/x.rb") is pinned the same
-    # way, and a path without a version uses the version already pinned for
-    # the package (or the one the import map gives it).
+    # way.
     def resolve_npm(spec, require_name, strict)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
-      version ||= @pinned[name] || mapped_version(name) unless path.empty?
+      # Without a version, reuse the release already pinned for the package,
+      # whether by its entry or by a path, so require order cannot mix
+      # releases. A path also takes the version the import map gives the
+      # package.
+      version ||= @pinned[name]
+      version ||= mapped_version(name) unless path.empty?
       pkg = package_json(name, version)
       if pkg.nil?
         raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if strict
@@ -335,6 +339,14 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # The message for the `index`th (1-based, Integer or String) text/ruby-importmap script that
+  # failed to parse. `id` is the script's id attribute ('' when it has none).
+  def self.import_map_error(index, id, message)
+    where = "text/ruby-importmap ##{index}"
+    where += " (id=\"#{id}\")" unless id.empty?
+    "#{where}: invalid JSON: #{message}"
+  end
+
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
     # A fetch with `integrity` fails (nil) when the file does not match it.
@@ -374,21 +386,36 @@ module PicoRubyLibs
     # [imports Hash, CDN list or nil, integrity Hash] from every
     # text/ruby-importmap script. "cdn" is a URL or a list of them.
     # "integrity" maps file URLs to SRI hashes.
+    # Raises Error naming the script when one is not a JSON object.
     def import_map
       map = JS.eval(<<~JS)
         (() => {
-          const map = { imports: {}, cdns: [], integrity: {} };
-          document.querySelectorAll('#{IMPORT_MAP}').forEach(el => {
-            const json = JSON.parse(el.textContent || '{}');
+          const map = { imports: {}, cdns: [], integrity: {}, error: null };
+          const els = document.querySelectorAll('#{IMPORT_MAP}');
+          for (let i = 0; i < els.length; i++) {
+            const el = els[i];
+            let json;
+            try {
+              json = JSON.parse(el.textContent || '{}');
+            } catch (e) {
+              return { error: { index: String(i + 1), id: el.id, message: String(e.message) } };
+            }
+            if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+              return { error: { index: String(i + 1), id: el.id, message: 'expected a JSON object' } };
+            }
             Object.assign(map.imports, json.imports || {});
             Object.assign(map.integrity, json.integrity || {});
             if (json.cdn) map.cdns = [].concat(json.cdn).map(String);
-          });
+          }
           map.entries = Object.entries(map.imports);
           map.hashes = Object.entries(map.integrity);
           return map;
         })()
       JS
+      error = map[:error]
+      unless error.nil?
+        raise Error, PicoRubyLibs.import_map_error(error[:index].to_s, error[:id].to_s, error[:message].to_s)
+      end
       imports = {}
       map[:entries].to_a.each { |pair| imports[pair[0]] = pair[1] }
       cdns = map[:cdns].to_a.map { |c| c.to_s }
