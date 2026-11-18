@@ -42,4 +42,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: npm pkg set version="${TAG#v}"
 
-      - run: npm publish --provenance --access public
+      # npm refuses to publish a prerelease (1.2.3-rc.1) without an explicit
+      # dist-tag, so prereleases go to "next" and leave "latest" alone.
+      - name: Publish
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "${TAG#v}" == *-* ]]; then
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public
+          fi
