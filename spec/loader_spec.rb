@@ -80,6 +80,18 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.import_map_error' do
+    it 'names the import map by its position and id, with the original error' do
+      expect(described_class.import_map_error(2, 'libs', 'Unexpected token }'))
+        .to eq 'text/ruby-importmap #2 (id="libs"): invalid JSON: Unexpected token }'
+    end
+
+    it 'leaves out the id when the script has none' do
+      expect(described_class.import_map_error('1', '', 'expected a JSON object'))
+        .to eq 'text/ruby-importmap #1: invalid JSON: expected a JSON object'
+    end
+  end
+
   describe PicoRubyLibs::Resolver do
     it 'resolves the "picoruby" field, pinned to the version package.json reports' do
       r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
@@ -307,6 +319,18 @@ RSpec.describe PicoRubyLibs do
     it "inlines in a later script the libraries a failed script had marked as loaded" do
       io = boot([["require 'a'\nrequire 'b'", nil, nil], ["require 'a'\nputs A", nil, nil]])
       expect(io.errors[0]).to include("from require 'b' at script #1:2")
+      expect(io.tasks.size).to eq 1
+      expect(io.tasks[0][0]).to include('A = 1')
+    end
+
+    it 'inlines into a later script the libraries of a script whose task could not be created' do
+      io = boot_io_class.new(files, [["require 'a'\nputs 1", nil, nil], ["require 'a'\nputs 2", nil, nil]], cdn: cdn)
+      def io.create_task(code, filename)
+        raise 'no task' if code.end_with?('puts 1')
+        super
+      end
+      described_class.boot(io)
+      expect(io.errors[0]).to include('script #1 was not started: no task')
       expect(io.tasks.size).to eq 1
       expect(io.tasks[0][0]).to include('A = 1')
     end
