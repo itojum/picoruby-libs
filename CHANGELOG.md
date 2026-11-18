@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- E2E tests that run `loader.rb` on real PicoRuby.wasm in headless Chromium (Playwright), on the pinned `@picoruby/wasm-wasi` and on `latest`, in CI and weekly. Run them with `npm run test:e2e`. ([#27](https://github.com/itojum/picoruby-libs/issues/27))
+
 ## [0.2.0] - 2026-11-19
 
 ### Added

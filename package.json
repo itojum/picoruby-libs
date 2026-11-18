@@ -7,7 +7,8 @@
   ],
   "scripts": {
     "test": "bundle exec rspec",
-    "serve": "ruby -run -e httpd . -p 3000"
+    "serve": "ruby -run -e httpd . -p 3000",
+    "test:e2e": "playwright test"
   },
   "keywords": [
     "picoruby",
@@ -25,5 +26,8 @@
   },
   "bugs": {
     "url": "https://github.com/itojum/picoruby-libs/issues"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
   }
 }
