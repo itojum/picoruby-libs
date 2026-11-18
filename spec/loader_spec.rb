@@ -80,6 +80,15 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.js_with_args' do
+    it 'reads the globals into constants and deletes them before the body runs' do
+      expect(described_class.js_with_args(%w[arg base], 'f(arg, base)')).to eq(
+        '(() => { const arg = window.__picoruby_libs_arg, base = window.__picoruby_libs_base; ' \
+        'delete window.__picoruby_libs_arg; delete window.__picoruby_libs_base; return (f(arg, base)); })()'
+      )
+    end
+  end
+
   describe PicoRubyLibs::Resolver do
     it 'resolves the "picoruby" field, pinned to the version package.json reports' do
       r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
