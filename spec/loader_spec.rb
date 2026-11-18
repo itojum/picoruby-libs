@@ -317,6 +317,18 @@ RSpec.describe PicoRubyLibs do
       expect(io.tasks[0][0]).to include('A = 1')
     end
 
+    it 'inlines into a later script the libraries of a script whose task could not be created' do
+      io = boot_io_class.new(files, [["require 'a'\nputs 1", nil, nil], ["require 'a'\nputs 2", nil, nil]], cdn: cdn)
+      def io.create_task(code, filename)
+        raise 'no task' if code.end_with?('puts 1')
+        super
+      end
+      described_class.boot(io)
+      expect(io.errors[0]).to include('script #1 was not started: no task')
+      expect(io.tasks.size).to eq 1
+      expect(io.tasks[0][0]).to include('A = 1')
+    end
+
     it 'reports a script whose src cannot be fetched and starts the others' do
       io = boot([[nil, 'missing.rb', 'https://site.test/missing.rb'], ['puts 2', nil, nil]])
       expect(io.errors).to eq ['picoruby-libs: script #1 (missing.rb) was not started: failed to load https://site.test/missing.rb']

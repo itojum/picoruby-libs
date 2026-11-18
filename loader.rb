@@ -215,13 +215,16 @@ module PicoRubyLibs
       out
     end
 
-    # Expands one text/ruby-app script. When it fails, the libraries it had
-    # marked as loaded are forgotten, so a later script inlines them itself.
-    # `where` names the script in error messages.
+    # Expands one text/ruby-app script and yields the result (to start it).
+    # When expanding or the block fails, the libraries it had marked as loaded
+    # are forgotten, so a later script inlines them itself. `where` names the
+    # script in error messages.
     def expand_script(code, base = nil, where = nil)
       saved = @loaded.dup
       begin
-        expand(code, base, where)
+        out = expand(code, base, where)
+        yield out if block_given?
+        out
       rescue => e
         @loaded = saved
         raise e
@@ -415,7 +418,7 @@ module PicoRubyLibs
       label = "script ##{i + 1}" + (filename ? " (#{filename})" : '')
       begin
         raise Error, "failed to load #{url}" if code.nil?
-        io.create_task(expander.expand_script(code, url, url || "script ##{i + 1}"), filename)
+        expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
       rescue => e
         io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
       end
