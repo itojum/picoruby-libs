@@ -92,6 +92,7 @@ module PicoRubyLibs
     in_comment = false
     heredocs = [] # [[identifier, indentable], ...] still to be closed
     code.split("\n").each_with_index do |line, i|
+      line = line[0..-2] if line.end_with?("\r") # CRLF source
       unless heredocs.empty?
         id, indentable = heredocs[0]
         # Only leading blanks may precede the terminator of <<~ / <<-.
@@ -113,64 +114,107 @@ module PicoRubyLibs
   end
 
   # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
-  # Skips `<<` inside a '...', "..." or `...` string and after a comment's
-  # `#`, and takes `<<` for a shift when it follows a value (a number, a
-  # closing bracket or quote) or, without a blank between, an identifier.
-  # A bare `<<ID` also needs an upper-case identifier (`list << item`).
+  # Steps over strings, regexps and percent literals that close on the line,
+  # stops at a comment or at one that does not close, and takes `<<` for a
+  # shift where a value precedes it (`n <<X` after a number, a closing
+  # bracket, or an identifier with no blank before `<<`). A bare `<<ID`
+  # also needs an upper-case identifier (`list << item`).
   def self.heredoc_starts(line)
     starts = []
-    quote = nil
-    prev = ''         # the last character outside strings that is not a blank
-    spaced = true     # whether a blank follows `prev`
+    kind = :op    # what precedes: :op (start, operator), :ident or :value
+    spaced = true # whether a blank follows it
     pos = 0
     while pos < line.length
       c = line[pos]
-      if quote
-        if c == '\\'
-          pos += 2
-          next
-        end
-        if c == quote
-          quote = nil
-          prev = c
-          spaced = false
-        end
+      if c == ' ' || c == "\t"
+        spaced = true
         pos += 1
         next
       end
-      break if c == '#'
-      if c == '"' || c == "'" || c == '`'
-        quote = c
+      after = nil # the index after a literal that closes on this line
+      if c == '#'
+        break
+      elsif c == '"' || c == "'" || c == '`'
+        after = literal_end(line, pos + 1, c, nil)
+        return starts if after.nil?
+      elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
+        after = literal_end(line, pos + 1, '/', nil)
+        return starts if after.nil?
+      elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
+        open = m[0][-1]
+        close = PAIRS[open]
+        after = literal_end(line, pos + m[0].length, close || open, close ? open : nil)
+        return starts if after.nil?
       elsif c == '<' && line[pos + 1] == '<'
         m = line[pos..-1].match(HEREDOC_START)
-        if m && heredoc_context?(prev, spaced) &&
+        if m && expression_start?(kind, spaced, line[pos + 2]) &&
            (!m[1].empty? || !m[2].empty? || m[3] == m[3].upcase)
           starts << [m[3], !m[1].empty?]
-          pos += m[0].length
-          prev = 'x'
+          after = pos + m[0].length
+        else
+          pos += 2
+          kind = :op
           spaced = false
           next
         end
-        prev = '<'
+      elsif c.match(/^[A-Za-z0-9_]$/)
+        word_end = pos
+        word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
+        word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
+        kind = '0123456789'.include?(c) ? :value : :ident
         spaced = false
-        pos += 2
+        pos = word_end
         next
-      elsif c == ' ' || c == "\t"
-        spaced = true
+      elsif ')]}'.include?(c)
+        after = pos + 1
       else
-        prev = c
+        kind = :op
         spaced = false
+        pos += 1
+        next
       end
-      pos += 1
+      kind = :value
+      spaced = false
+      pos = after
     end
     starts
   end
 
-  # Whether `<<` after `prev` (see heredoc_starts) can start a heredoc.
-  def self.heredoc_context?(prev, spaced)
-    return false if '0123456789)]}"\'`'.include?(prev) && !prev.empty?
-    return spaced if prev.match(/^[A-Za-z0-9_?!]$/)
-    true
+  # `%q(`, `%w[`, `%r{`, ... or a bare `%(`: a percent literal's opening.
+  PERCENT_START = /^%([qQwWiIrsx][^A-Za-z0-9 \t]|[(\[{<|!\/^])/
+  PAIRS = { '(' => ')', '[' => ']', '{' => '}', '<' => '>' }
+
+  # Whether a literal (or a heredoc) can start at a token whose next
+  # character is `nxt`, after a token of `kind`. After an identifier it is
+  # an argument only with a blank before it and none after (`puts <<~X`,
+  # `if /x/`); otherwise it is an operator (`a / b`, `n<<X`, `x % 2`).
+  def self.expression_start?(kind, spaced, nxt)
+    return true if kind == :op
+    return false if kind == :value
+    spaced && !nxt.nil? && nxt != ' ' && nxt != "\t" && nxt != '='
+  end
+
+  # The index after the `close` that ends a literal whose body starts at
+  # `from`, or nil when it does not end on this line. `open` (for bracket
+  # delimiters) nests.
+  def self.literal_end(line, from, close, open)
+    depth = 0
+    i = from
+    while i < line.length
+      c = line[i]
+      if c == '\\'
+        i += 2
+        next
+      end
+      if c == close
+        return i + 1 if depth == 0
+        depth -= 1
+      elsif open && c == open
+        depth += 1
+      end
+      i += 1
+    end
+    nil
   end
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]

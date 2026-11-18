@@ -111,6 +111,32 @@ RSpec.describe PicoRubyLibs do
       expect(described_class.find_requires(code).map(&:name)).to eq ['a']
     end
 
+    it 'steps over regexps and percent literals' do
+      code = [
+        'x = /<<~EOS/',
+        'y = %q{<<~EOS}',
+        'w = %w[<<~EOS a]',
+        'z = a / 2 + c / 3 <<X',
+        "require 'a'",
+        'puts %q{#}, <<~EOS',
+        "require 'in_heredoc'",
+        'EOS',
+        'q = n % m',
+        "require 'b'",
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq %w[a b]
+    end
+
+    it 'takes << after an identifier ending in a digit for a heredoc' do
+      code = "log2 <<~EOS\nrequire 'in_heredoc'\nEOS\nn = 2 <<X\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'reads CRLF source' do
+      code = "h = <<~EOS\r\ntext\r\nEOS\r\nrequire 'real'\r\n"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
     it 'finds heredocs after a string or as a method argument' do
       code = "puts 'x', <<~A\nrequire 'in_a'\nA\nputs <<B\nrequire 'in_b'\nB\nrequire 'c'"
       expect(described_class.find_requires(code).map(&:name)).to eq ['c']
