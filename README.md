@@ -96,20 +96,14 @@ npm run serve              # serves examples/ at http://localhost:3000/examples/
 
 ## Releasing
 
-Releases are made with [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `feat!:` / `BREAKING CHANGE:` for breaking changes).
+Publishing a GitHub Release publishes the package to npm.
 
-1. Merge PRs into `main` with **squash merge**, using a Conventional Commits PR title (it becomes the commit message and the changelog entry).
-2. Every push to `main` runs the **Release** workflow, which opens or updates a release PR with the version bump and `CHANGELOG.md`.
-3. Merge the release PR. The same workflow creates the tag and the GitHub Release, then runs the specs and publishes the package to npm with provenance.
+1. Create a release on GitHub with a new tag named after the version, such as `v0.2.0`. **Generate release notes** fills in the merged PRs.
+2. When the release is published, the **Publish to npm** workflow runs the specs and publishes the package with provenance. The version comes from the tag, so `package.json` does not need a bump.
 
-To publish the version in `package.json` again without a new release (for example after a failed publish), run the **Release** workflow by hand from the Actions tab with **publish** checked.
+To publish a tag again (for example after a failed publish), run **Publish to npm** by hand from the Actions tab with that tag selected under **Use workflow from**.
 
-The workflow uses only the default `GITHUB_TOKEN`; no personal access token is needed. Because of that, CI does not run on release PRs (GitHub does not start workflows for events made with `GITHUB_TOKEN`), but the publish job runs the specs before publishing.
-
-Setup, once per repository:
-
-- In **Settings → Actions → General → Workflow permissions**, check **Allow GitHub Actions to create and approve pull requests**, so release-please can open release PRs.
-- npm trusted publishing is configured on a package that already exists, so publish the first version by hand (`npm publish --access public`), then add this repository's `release.yml` as a trusted publisher in the package settings on npmjs.com.
+Setup, once: npm trusted publishing is configured on a package that already exists, so publish the first version by hand (`npm publish --access public`), then add this repository's `publish.yml` as a trusted publisher in the package settings on npmjs.com.
 
 ## License
 
