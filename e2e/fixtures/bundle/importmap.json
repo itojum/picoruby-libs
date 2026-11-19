@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "greeter": "npm:greeter@1.0.0",
+    "shout": "npm:shout@2.0.0"
+  }
+}

@@ -3,8 +3,13 @@
   "version": "0.2.0",
   "description": "Load PicoRuby libraries from npm with `require` in PicoRuby.wasm",
   "files": [
-    "loader.rb"
+    "loader.rb",
+    "bin/",
+    "lib/"
   ],
+  "bin": {
+    "picoruby-libs": "bin/picoruby-libs"
+  },
   "scripts": {
     "test": "bundle exec rspec",
     "serve": "ruby -run -e httpd . -p 3000",
