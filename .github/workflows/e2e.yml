@@ -1,0 +1,40 @@
+name: E2E
+
+# Runs loader.rb on real PicoRuby.wasm in headless Chromium (Playwright), on
+# the pinned @picoruby/wasm-wasi version and on latest. The weekly run catches
+# PicoRuby.wasm releases that break the loader.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '41 3 * * 1'  # Mondays 03:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        picoruby-wasm: [pinned, latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        env:
+          PICORUBY_WASM_VERSION: ${{ matrix.picoruby-wasm == 'latest' && 'latest' || '' }}
+        run: npx playwright test

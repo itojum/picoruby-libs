@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>built-in libraries</title></head>
+<body>
+  <script type="text/ruby" src="/loader.rb"></script>
+  <script type="text/ruby-app">
+    require 'js'
+    require 'json'
+
+    puts "E2E json: #{JSON.generate({ 'ok' => true })}"
+    puts "E2E js: #{JS.global[:location][:pathname]}"
+  </script>
+  <script type="text/ruby-app">
+    # Scripts start in document order, each as its own task.
+    puts 'E2E second script'
+  </script>
+
+  <script src="{{PICORUBY_WASM}}/init.iife.js"></script>
+</body>
+</html>

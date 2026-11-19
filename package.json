@@ -8,7 +8,8 @@
   "scripts": {
     "test": "bundle exec rspec",
     "serve": "ruby -run -e httpd . -p 3000",
-    "check:builtins": "node scripts/check-builtins.mjs"
+    "check:builtins": "node scripts/check-builtins.mjs",
+    "test:e2e": "playwright test"
   },
   "keywords": [
     "picoruby",
@@ -28,6 +29,7 @@
     "url": "https://github.com/itojum/picoruby-libs/issues"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "playwright": "^1.65.1"
   }
 }
