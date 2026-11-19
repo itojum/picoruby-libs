@@ -540,6 +540,24 @@ RSpec.describe PicoRubyLibs do
       expect(out).not_to include('V = 2')
     end
 
+    it 'resolves an unversioned path to the release a nested require inlined' do
+      files = {
+        "#{cdn}wrapper/package.json" => { 'name' => 'wrapper', 'version' => '1.0.0', 'picoruby' => 'w.rb' },
+        "#{cdn}wrapper@1.0.0/w.rb" => "require 'one'",
+        "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@2/package.json" => { 'name' => 'pkg', 'version' => '2.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@1.0.0/lib/pkg.rb" => 'V = 1',
+        "#{cdn}pkg@2.0.0/lib/pkg.rb" => 'V = 2',
+        "#{cdn}pkg@1.0.0/lib/helper.rb" => 'H = 1',
+        "#{cdn}pkg@2.0.0/lib/helper.rb" => 'H = 2',
+      }
+      r = resolver(files, imports: { 'wrapper' => 'npm:wrapper', 'one' => 'npm:pkg@1', 'two' => 'npm:pkg@2' })
+      out = described_class.new(r).expand_script("require 'wrapper'\nrequire 'two'\nrequire 'pkg/lib/helper.rb'")
+      expect(out).to include('V = 1', 'H = 1')
+      expect(out).not_to include('V = 2')
+      expect(out).not_to include('H = 2')
+    end
+
     it 'treats a path to the entry file as the package, so another release is not inlined' do
       files = {
         "#{cdn}pkg@1.0.0/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
