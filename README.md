@@ -108,11 +108,20 @@ bundle exec rspec          # or: npm test
 npm run serve              # serves examples/ at http://localhost:3000/examples/
 ```
 
-The E2E tests in `e2e/` run `loader.rb` on real PicoRuby.wasm in headless Chromium, with libraries served from a fake npm CDN (`e2e/fixtures/npm/`). They use the pinned `@picoruby/wasm-wasi` version in `e2e/server.mjs` unless `PICORUBY_WASM_VERSION` is set; CI runs both the pinned version and `latest`.
+`BUILTINS` in `loader.rb` lists the libraries compiled into PicoRuby.wasm, which the loader never looks up on npm. The **Builtins** workflow checks it every week against the latest `@picoruby/wasm-wasi`, by running PicoRuby.wasm in headless Chromium and asking it which require names are built in. To run the check locally (needs Node.js and Ruby):
 
 ```bash
 npm install
 npx playwright install chromium
+npm run check:builtins                         # against @picoruby/wasm-wasi@latest
+npm run check:builtins -- --version head       # or any version / dist-tag
+```
+
+When it fails, it prints the names to add to or remove from `BUILTINS`.
+
+The E2E tests in `e2e/` run `loader.rb` on real PicoRuby.wasm in headless Chromium, with libraries served from a fake npm CDN (`e2e/fixtures/npm/`). They use the pinned `@picoruby/wasm-wasi` version in `e2e/server.mjs` unless `PICORUBY_WASM_VERSION` is set; CI runs both the pinned version and `latest`.
+
+```bash
 npm run test:e2e                                  # pinned PicoRuby.wasm
 PICORUBY_WASM_VERSION=latest npm run test:e2e     # latest
 ```
