@@ -445,15 +445,28 @@ module PicoRubyLibs
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
 
+      # Resolve every require of this file first and start fetching their
+      # files together, then inline them in order. A failure is raised when
+      # its require is reached, so errors still come in file order.
+      resolved = requires.map do |req|
+        begin
+          [req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name), nil]
+        rescue => e
+          [nil, e]
+        end
+      end
+      prefetch(resolved.map { |r| r[0] })
+
       lines = code.split("\n")
       out = []
       nxt = 0
-      requires.each do |req|
+      requires.each_with_index do |req, i|
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
         begin
-          lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
+          lib, error = resolved[i]
+          raise error if error
           if lib.nil?
             out << line
           elsif @loaded[lib.id] || @loaded[lib.url]
@@ -485,12 +498,23 @@ module PicoRubyLibs
 
     private
 
-    def source(url)
-      @sources[url] ||= begin
-        text = @resolver.io.fetch_text(url)
-        raise Error, "failed to load #{url}" if text.nil?
-        text
+    # Tells io which files are about to be read, so it can fetch them in
+    # parallel. Files already read or already inlined in this script are
+    # left out.
+    def prefetch(libs)
+      urls = []
+      libs.each do |lib|
+        next if lib.nil? || @loaded[lib.id] || @sources.key?(lib.url) || urls.include?(lib.url)
+        urls << lib.url
       end
+      @resolver.io.prefetch(urls) unless urls.empty?
+    end
+
+    def source(url)
+      @sources[url] = @resolver.io.fetch_text(url) unless @sources.key?(url)
+      text = @sources[url]
+      raise Error, "failed to load #{url}" if text.nil?
+      text
     end
   end
 
@@ -531,8 +555,32 @@ module PicoRubyLibs
 
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
+    # Starts fetching `urls` at once without waiting. fetch_text then takes
+    # the result of a prefetched URL instead of fetching it again.
+    # The pending fetches stay in window.__picoruby_libs_fetches until
+    # fetch_text takes them.
+    def prefetch(urls)
+      eval_with({ 'arg' => urls.join("\n") }, <<~JS)
+        (() => {
+          const fetches = window.__picoruby_libs_fetches = window.__picoruby_libs_fetches || {};
+          arg.split(String.fromCharCode(10)).forEach(url => {
+            if (url && !fetches[url]) {
+              fetches[url] = fetch(url).then(r => r.ok ? r.text() : null).catch(() => null);
+            }
+          });
+        })()
+      JS
+    end
+
     def fetch_text(url)
-      eval_with({ 'arg' => url }, 'fetch(arg).then(r => r.ok ? r.text() : null)').await
+      eval_with({ 'arg' => url }, <<~JS).await
+        (() => {
+          const fetches = window.__picoruby_libs_fetches || {};
+          const pending = fetches[arg];
+          delete fetches[arg];
+          return pending || fetch(arg).then(r => r.ok ? r.text() : null);
+        })()
+      JS
     end
 
     # Only the package.json fields the resolver reads, as a Hash.
@@ -592,13 +640,15 @@ module PicoRubyLibs
     # script's require_relative. The code is nil when the src cannot be
     # fetched.
     def app_scripts
-      n = 0
-      JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
-        n += 1
-        src = el[:src].to_s
-        name = PicoRubyLibs.script_filename(src, n)
+      elements = JS.document.querySelectorAll(APP_SCRIPT).to_a
+      srcs = elements.map { |el| el[:src].to_s }
+      prefetch(srcs.reject { |src| src.empty? })
+      scripts = []
+      elements.each_with_index do |el, i|
+        src = srcs[i]
+        name = PicoRubyLibs.script_filename(src, i + 1)
         if src.empty?
-          [el[:textContent].to_s, name, nil]
+          scripts << [el[:textContent].to_s, name, nil]
         else
           # A rejected fetch (network or CORS error) raises at the await.
           # Return nil so only this script is skipped.
@@ -607,9 +657,10 @@ module PicoRubyLibs
           rescue => e
             nil
           end
-          [code, name, src]
+          scripts << [code, name, src]
         end
       end
+      scripts
     end
 
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
