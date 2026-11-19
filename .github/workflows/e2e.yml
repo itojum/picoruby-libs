@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # e2e/bundle.spec.mjs runs bin/picoruby-libs.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version

@@ -1,0 +1,4 @@
+#!/usr/bin/env ruby
+# picoruby-libs bundle APP.rb -o APP.bundle.rb  (see lib/picoruby_libs/bundle.rb)
+require_relative '../lib/picoruby_libs/bundle'
+exit PicoRubyLibs::Bundle.run(ARGV.dup)
