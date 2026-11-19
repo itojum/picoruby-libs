@@ -191,9 +191,11 @@ RSpec.describe PicoRubyLibs do
         "#require_relative 'k'",
         "puts 1 #require_relative 'k2'",
         "puts 'a\\'b require 'l' if z'",
+        "puts %q{require_relative 'm'}, /require 'n'/",
+        "/#/; require_relative 'o'",
       ].join("\n")
       expect(described_class.find_other_requires(code)).to eq [
-        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false],
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true],
       ]
     end
   end
@@ -421,6 +423,14 @@ RSpec.describe PicoRubyLibs do
       it 'does not raise for an import map entry that does not resolve' do
         ex = described_class.new(resolver(files, imports: { 'optional' => 'npm:missing' }))
         expect(ex.expand("require 'optional' if false")).to eq "require 'optional' if false"
+        expect(ex.warnings.size).to eq 1
+      end
+
+      it 'does not raise when looking a name up fails' do
+        r = resolver(files)
+        def r.resolve(name) = raise(name == 'broken' ? 'fetch failed' : 'unexpected')
+        ex = described_class.new(r)
+        expect(ex.expand("require 'broken' if false")).to eq "require 'broken' if false"
         expect(ex.warnings.size).to eq 1
       end
 

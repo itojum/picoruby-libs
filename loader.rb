@@ -117,34 +117,22 @@ module PicoRubyLibs
   end
 
   # [true/false, ...] for each character of `line`: whether it is code, not
-  # inside a '...', "..." or `...` string (interpolation included) and not
-  # in a comment. Indexes past the end (after a comment's `#`) are nil.
+  # inside a literal (string, regexp, percent literal, character literal)
+  # or a comment. Uses the heredoc scan's lexer.
   def self.code_mask(line)
-    mask = []
-    quote = nil
-    i = 0
-    while i < line.length
-      c = line[i]
-      if quote
-        mask << false
-        if c == '\\' && i + 1 < line.length
-          mask << false
-          i += 2
-          next
-        end
-        quote = nil if c == quote
-      elsif c == '#'
-        break
-      elsif c == '"' || c == "'" || c == '`'
-        quote = c
-        mask << false
-      else
-        mask << true
+    spans = []
+    scan_code(line, 0, [], false, spans)
+    mask = Array.new(line.length, true)
+    spans.each do |span|
+      i = span[0]
+      while i < span[1]
+        mask[i] = false
+        i += 1
       end
-      i += 1
     end
     mask
   end
+
 
   # The indentation of the least indented code line (not blank, not a
   # comment). A script written in the page is often indented as a whole;
@@ -212,9 +200,10 @@ module PicoRubyLibs
   VALUE_KEYWORDS = %w[true false nil self class __FILE__ __LINE__]
 
   # Scans code in `line` from `pos`, adding the heredocs it opens to
-  # `starts`. In an interpolation (`interp`), returns the index after the
+  # `starts`, and to `spans` (when given) [from, to] for each literal and
+  # for a comment. In an interpolation (`interp`), returns the index after the
   # `}` that closes it; otherwise, or when the line ends first, nil.
-  def self.scan_code(line, pos, starts, interp)
+  def self.scan_code(line, pos, starts, interp, spans = nil)
     kind = :op    # what precedes: :op (start, operator), :ident or :value
     spaced = true # whether a blank follows it
     braces = 0
@@ -226,7 +215,9 @@ module PicoRubyLibs
         next
       end
       after = nil # the index after a literal that closes on this line
+      literal = true
       if c == '#'
+        spans << [pos, line.length] if spans
         return nil
       elsif c == '"' || c == '`'
         after = literal_end(line, pos + 1, c, nil, starts, true)
@@ -280,14 +271,17 @@ module PicoRubyLibs
         return pos + 1 if interp && braces == 0
         braces -= 1
         after = pos + 1
+        literal = false
       elsif ')]'.include?(c)
         after = pos + 1
+        literal = false
       else
         kind = :op
         spaced = false
         pos += 1
         next
       end
+      spans << [pos, after || line.length] if spans && literal
       return nil if after.nil?
       kind = :value
       spaced = false
@@ -568,13 +562,14 @@ module PicoRubyLibs
       end
     end
 
-    # Whether `require name` would be inlined. A resolver error (an import
-    # map entry that does not resolve) counts as yes, but is not raised: the
-    # require is not expanded, and may never run (`require 'x' if false`).
+    # Whether `require name` would be inlined. An error while resolving it (an
+    # import map entry that does not resolve, a failed fetch, a broken
+    # package.json) counts as yes, but is not raised: the require is not
+    # expanded, and may never run (`require 'x' if false`).
     def library?(name)
       begin
         !@resolver.resolve(name).nil?
-      rescue Error
+      rescue => e
         true
       end
     end
