@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>failing scripts</title></head>
+<body>
+  <script>
+    // Added before init.iife.js, so no event is missed.
+    window.e2eEvents = [];
+    document.addEventListener('picoruby-libs:error', (e) => window.e2eEvents.push(['error', e.detail]));
+    document.addEventListener('picoruby-libs:ready', () => window.e2eEvents.push(['ready', null]));
+  </script>
+  <script type="text/ruby" src="/loader.rb"></script>
+  <script type="text/ruby-app" src="/app/missing.rb"></script>
+  <script type="text/ruby-app">
+    def broken(
+  </script>
+  <script type="text/ruby-app">
+    puts 'E2E healthy script'
+  </script>
+
+  <script src="{{PICORUBY_WASM}}/init.iife.js"></script>
+</body>
+</html>
