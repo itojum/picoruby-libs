@@ -143,6 +143,12 @@ module PicoRubyLibs
         @frozen = frozen
         @lock = Lock.new
         @io = IntegrityIO.new(resolver.io, self)
+        # Locked libraries pin their packages, so a path into one of them
+        # that is not locked yet resolves to the same release.
+        @old.requires.each do |name, entry|
+          next unless entry['url'] && entry['import'] == (@imports.key?(name) ? @imports[name] : nil)
+          @resolver.pin_url(entry['url'])
+        end
       end
 
       attr_reader :io
@@ -177,6 +183,14 @@ module PicoRubyLibs
 
       def resolve_relative(name, base)
         @resolver.resolve_relative(name, base)
+      end
+
+      def inlined(lib)
+        @resolver.inlined(lib)
+      end
+
+      def new_script
+        @resolver.new_script
       end
 
       # Called by IntegrityIO before fetching: with --frozen, a file outside
@@ -227,6 +241,9 @@ module PicoRubyLibs
         @checker.check(url, text) unless text.nil?
         text
       end
+
+      # Files are read one at a time here, so there is nothing to start early.
+      def prefetch(_urls); end
 
       def fetch_json(url)
         @io.fetch_json(url)
