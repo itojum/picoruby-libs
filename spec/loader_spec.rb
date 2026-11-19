@@ -366,9 +366,9 @@ RSpec.describe PicoRubyLibs do
           .to raise_error(PicoRubyLibs::Error, /^script #2:2: require 'a' is indented.*top level/)
       end
 
-      it 'raises for a library that is already loaded' do
-        expect { expander.expand_all(["require 'a'", "def f\n  require 'a'\nend"]) }
-          .to raise_error(PicoRubyLibs::Error, /script #2:2/)
+      it 'raises for a library that the same script has already loaded' do
+        expect { expander.expand_all(["require 'a'\ndef f\n  require 'a'\nend"]) }
+          .to raise_error(PicoRubyLibs::Error, /^script #1:3: require 'a' is indented/)
       end
 
       it 'raises for require_relative, naming the file by its URL' do
