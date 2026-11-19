@@ -3,7 +3,8 @@ import { CDN, PICORUBY_WASM, PICORUBY_WASM_VERSION, SITE, serve } from './server
 
 // Opens `path` and collects what PicoRuby prints. Ruby's `puts` goes to
 // console.log; the fixtures prefix the lines the tests look at with "E2E ".
-async function open(page, path) {
+// `setup` runs after the fixtures are routed and before the page loads.
+async function open(page, path, setup = async () => {}) {
   const logs = [];
   const errors = [];
   const requests = [];
@@ -14,6 +15,7 @@ async function open(page, path) {
   page.on('pageerror', (err) => errors.push(err.message));
   page.on('request', (req) => requests.push(req.url()));
   await serve(page);
+  await setup();
   await page.goto(SITE + path);
   return { logs, errors, requests };
 }
@@ -77,4 +79,34 @@ test('leaves built-in libraries to PicoRuby and starts every script', async ({ p
   expect(run.errors).toEqual([]);
   // js and json are in BUILTINS, so they are not looked up anywhere.
   expect(run.requests.filter((url) => /\/(js|json)(@|\/package\.json)/.test(url))).toEqual([]);
+});
+
+// Holds back the responses for `paths` until all of them have been requested,
+// so the page only gets them if it fetches them at the same time. Gives up
+// after a few seconds so a sequential loader fails the test instead of hanging.
+async function requireTogether(page, paths) {
+  const waiting = [];
+  let together = false;
+  await page.route(
+    (url) => paths.includes(url.pathname),
+    async (route) => {
+      waiting.push(route);
+      if (waiting.length === paths.length) together = true;
+      if (!together) await new Promise((resolve) => setTimeout(resolve, 3_000));
+      return route.fallback();
+    },
+  );
+  return () => together;
+}
+
+test('fetches the src of every script, and the requires of a file, in parallel', async ({ page }) => {
+  let srcs;
+  let libs;
+  const run = await open(page, '/parallel.html', async () => {
+    srcs = await requireTogether(page, ['/parallel/one.rb', '/parallel/two.rb']);
+    libs = await requireTogether(page, ['/parallel/lib/a.rb', '/parallel/lib/b.rb']);
+  });
+  await waitForLogs(run, ['one: 3', 'two']);
+  expect(srcs()).toBe(true);
+  expect(libs()).toBe(true);
 });
