@@ -178,12 +178,12 @@ module PicoRubyLibs
     def resolve_npm(spec, require_name, strict)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
-      # Without a version, reuse the release already pinned for the package,
-      # whether by its entry or by a path, so require order cannot mix
-      # releases. A path also takes the version the import map gives the
-      # package.
-      version ||= @pinned[name]
+      # Without a version, a path takes the version the import map gives the
+      # package, so it matches the entry that mapping loads. Otherwise reuse
+      # the release already pinned for the package, by its entry or by a
+      # path, so require order cannot mix releases.
       version ||= mapped_version(name) unless path.empty?
+      version ||= @pinned[name]
       pkg = package_json(name, version)
       if pkg.nil?
         raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if strict
@@ -197,9 +197,12 @@ module PicoRubyLibs
         return nil
       end
       @pinned[name] ||= pkg['version']
-      url = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
-      return Library.new(pkg['name'], url + entry.sub(/^\.?\//, '')) if path.empty?
-      Library.new(url + path, url + path)
+      # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
+      # file look like two.
+      base = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
+      return Library.new(pkg['name'], @io.absolute_url(entry.sub(/^\.?\//, ''), base)) if path.empty?
+      url = @io.absolute_url(path, base)
+      Library.new(url, url)
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
