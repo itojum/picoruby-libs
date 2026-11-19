@@ -638,6 +638,13 @@ module PicoRubyLibs
       eval_with({ 'arg' => message }, 'console.error(arg)')
     end
 
+    # Dispatches a CustomEvent named `type` on document, with `detail` (a
+    # String or nil).
+    def dispatch_event(type, detail = nil)
+      eval_with({ 'arg' => type, 'detail' => detail },
+                'document.dispatchEvent(new CustomEvent(arg, { detail: detail }))')
+    end
+
     private
 
     # Evaluates `body` with `args` ({ name => value }) passed through
@@ -646,17 +653,6 @@ module PicoRubyLibs
     def eval_with(args, body)
       args.each { |name, value| JS.global[('__picoruby_libs_' + name).to_sym] = value }
       JS.eval(PicoRubyLibs.js_with_args(args.keys, body))
-    end
-
-    # Dispatches a CustomEvent named `type` on document, with `detail` (a
-    # String or nil).
-    def dispatch_event(type, detail = nil)
-      JS.global[:__picoruby_libs_arg] = type
-      JS.global[:__picoruby_libs_detail] = detail
-      JS.eval(<<~JS)
-        document.dispatchEvent(new CustomEvent(window.__picoruby_libs_arg,
-                                               { detail: window.__picoruby_libs_detail }))
-      JS
     end
   end
 
