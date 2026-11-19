@@ -85,14 +85,24 @@ test('leaves built-in libraries to PicoRuby and starts every script', async ({ p
 // so the page only gets them if it fetches them at the same time. Gives up
 // after a few seconds so a sequential loader fails the test instead of hanging.
 async function requireTogether(page, paths) {
-  const waiting = [];
+  const requested = new Set();
   let together = false;
+  let gaveUp = false;
+  let release;
+  const allRequested = new Promise((resolve) => {
+    release = resolve;
+  });
   await page.route(
     (url) => paths.includes(url.pathname),
     async (route) => {
-      waiting.push(route);
-      if (waiting.length === paths.length) together = true;
-      if (!together) await new Promise((resolve) => setTimeout(resolve, 3_000));
+      requested.add(new URL(route.request().url()).pathname);
+      if (requested.size === paths.length) {
+        // Together only if no response had to be let go before this one.
+        together = !gaveUp;
+        release();
+      }
+      await Promise.race([allRequested, new Promise((resolve) => setTimeout(resolve, 3_000))]);
+      if (requested.size < paths.length) gaveUp = true;
       return route.fallback();
     },
   );
