@@ -460,6 +460,15 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # JavaScript that reads `names` from window.__picoruby_libs_<name> into
+  # local constants, deletes those globals, and returns the value of `body`
+  # (an expression that uses the constants).
+  def self.js_with_args(names, body)
+    reads = names.map { |n| "#{n} = window.__picoruby_libs_#{n}" }.join(', ')
+    deletes = names.map { |n| "delete window.__picoruby_libs_#{n};" }.join(' ')
+    "(() => { const #{reads}; #{deletes} return (#{body}); })()"
+  end
+
   # The file name PicoRuby reports in errors for the `n`th (1-based)
   # text/ruby-app script on the page: the last segment of the `src` URL's
   # path, without query or fragment, or `inline-n.rb` for an inline script.
@@ -484,17 +493,13 @@ module PicoRubyLibs
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
     def fetch_text(url)
-      JS.global[:__picoruby_libs_arg] = url
-      JS.eval(
-        'fetch(window.__picoruby_libs_arg).then(r => r.ok ? r.text() : null)'
-      ).await
+      eval_with({ 'arg' => url }, 'fetch(arg).then(r => r.ok ? r.text() : null)').await
     end
 
     # Only the package.json fields the resolver reads, as a Hash.
     def fetch_json(url)
-      JS.global[:__picoruby_libs_arg] = url
-      pkg = JS.eval(<<~JS).await
-        fetch(window.__picoruby_libs_arg)
+      pkg = eval_with({ 'arg' => url }, <<~JS).await
+        fetch(arg)
           .then(r => r.ok ? r.json() : null)
           .then(p => p && {
             name: p.name, version: p.version, main: p.main,
@@ -506,9 +511,7 @@ module PicoRubyLibs
     end
 
     def absolute_url(path, base = nil)
-      JS.global[:__picoruby_libs_arg] = path
-      JS.global[:__picoruby_libs_base] = base
-      JS.eval('new URL(window.__picoruby_libs_arg, window.__picoruby_libs_base || document.baseURI).href')
+      eval_with({ 'arg' => path, 'base' => base }, 'new URL(arg, base || document.baseURI).href')
     end
 
     # [imports Hash, cdn or nil] from every text/ruby-importmap script.
@@ -573,19 +576,25 @@ module PicoRubyLibs
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
     def create_task(code, filename)
-      JS.global[:__picoruby_libs_arg] = code
-      JS.global[:__picoruby_libs_file] = filename
-      JS.eval(<<~JS)
-        window.__picoruby_libs_file
-          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'],
-                                 [window.__picoruby_libs_arg, window.__picoruby_libs_file])
-          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [window.__picoruby_libs_arg])
+      eval_with({ 'arg' => code, 'file' => filename }, <<~JS)
+        file
+          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'], [arg, file])
+          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [arg])
       JS
     end
 
     def report_error(message)
-      JS.global[:__picoruby_libs_arg] = message
-      JS.eval('console.error(window.__picoruby_libs_arg)')
+      eval_with({ 'arg' => message }, 'console.error(arg)')
+    end
+
+    private
+
+    # Evaluates `body` with `args` ({ name => value }) passed through
+    # window.__picoruby_libs_<name>, which are removed before `body` runs so
+    # no value (such as a whole expanded script) stays on `window`.
+    def eval_with(args, body)
+      args.each { |name, value| JS.global[('__picoruby_libs_' + name).to_sym] = value }
+      JS.eval(PicoRubyLibs.js_with_args(args.keys, body))
     end
 
     # Dispatches a CustomEvent named `type` on document, with `detail` (a

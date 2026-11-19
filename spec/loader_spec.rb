@@ -179,6 +179,15 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.js_with_args' do
+    it 'reads the globals into constants and deletes them before the body runs' do
+      expect(described_class.js_with_args(%w[arg base], 'f(arg, base)')).to eq(
+        '(() => { const arg = window.__picoruby_libs_arg, base = window.__picoruby_libs_base; ' \
+        'delete window.__picoruby_libs_arg; delete window.__picoruby_libs_base; return (f(arg, base)); })()'
+      )
+    end
+  end
+
   describe '.script_filename' do
     it 'names an inline script by its position on the page' do
       expect(described_class.script_filename('', 1)).to eq 'inline-1.rb'
