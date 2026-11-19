@@ -9,9 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A script that fails to expand (for example, because a library cannot be fetched) no longer stops every other script from starting. Each `text/ruby-app` script is expanded and started on its own; a failing one is skipped and reported with `console.error`. ([#21](https://github.com/itojum/picoruby-libs/issues/21))
-  - The error names the script (`script #2 (main.rb)`) and, for each `require` / `require_relative` that led to the failure, its name, file and line.
-  - A script whose `src` cannot be fetched is reported the same way instead of raising.
 - A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
 
 ## [0.2.0] - 2026-11-19
