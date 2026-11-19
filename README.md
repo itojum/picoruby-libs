@@ -34,6 +34,7 @@ Rules:
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it.
 - A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
+- If a script cannot be expanded (a library or its `src` cannot be fetched, for example), that script is not started and the error goes to the browser console with each `require` that led to it, as `from require 'name' at file:line`. The other scripts still start.
 
 ## require_relative
 
@@ -95,6 +96,7 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.
+- Requires inside heredocs and `=begin`/`=end` comments are left alone, but other multi-line strings (`%q{...}`, `'...'` spanning lines) are not tracked: a line in them that reads as a whole `require` statement is expanded. Heredocs are found by a small heuristic lexer, not a Ruby parser, so unusual code (e.g. `x <<Y` where `x` is a local variable) can be misread.
 - Line numbers in error messages refer to the expanded script. Each library is wrapped in `# --- picoruby-libs: name (url) ---` comments.
 - The loader starts tasks through `picorb_create_task`, the same PicoRuby.wasm function `init.iife.js` uses. It is not a documented API, so a PicoRuby.wasm release could change it. Pin the runtime version for anything you publish.
 

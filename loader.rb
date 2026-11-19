@@ -76,11 +76,35 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
+  # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
+  # `<<ID`, with the identifier optionally quoted.
+  # A quoted identifier may hold any character but its quote.
+  HEREDOC_START = /^<<([~-]?)(?:(["'`])(.*?)\2|([A-Za-z_][A-Za-z0-9_]*))/
+
   # Returns a Require for each require line in `code`.
   def self.find_requires(code)
     found = []
+    each_code_line(code) do |line, i|
+      m = line.match(REQUIRE_LINE)
+      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+    end
+    found
+  end
+
+  # Yields each line of `code` that is Ruby code, with its index: skips
+  # =begin/=end comments and the bodies of heredocs, and stops at __END__.
+  # Other multi-line strings (%q{...}, '...') are not tracked.
+  def self.each_code_line(code)
     in_comment = false
+    heredocs = [] # [[identifier, indentable], ...] still to be closed
     code.split("\n").each_with_index do |line, i|
+      line = line[0..-2] if line.end_with?("\r") # CRLF source
+      unless heredocs.empty?
+        id, indentable = heredocs[0]
+        # Only leading blanks may precede the terminator of <<~ / <<-.
+        heredocs.shift if (indentable ? line.sub(/^[ \t]+/, '') : line) == id
+        next
+      end
       if in_comment
         in_comment = false if line.start_with?('=end')
         next
@@ -90,10 +114,156 @@ module PicoRubyLibs
         next
       end
       break if line.strip == '__END__' && line.start_with?('__END__')
-      m = line.match(REQUIRE_LINE)
-      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+      yield line, i
+      heredocs.concat(heredoc_starts(line))
     end
-    found
+  end
+
+  # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
+  # This is a heuristic lexer, not a Ruby parser: it steps over strings,
+  # regexps and percent literals that close on the line (looking into their
+  # #{...}), stops at a comment or at a literal that does not close, and
+  # takes `<<` for a shift where a value precedes it (`n <<X` after a
+  # number, a closing bracket, or an identifier with no blank before `<<`).
+  # A bare `<<ID` also needs an upper-case identifier (`list << item`).
+  def self.heredoc_starts(line)
+    starts = []
+    scan_code(line, 0, starts, false)
+    starts
+  end
+
+  # Keywords after which an expression starts, so `return<<~EOS` and
+  # `when /x/` read as literals.
+  EXPRESSION_KEYWORDS = %w[
+    return when if unless elsif while until and or not then do else in yield
+    case puts print p raise
+  ]
+
+  # Scans code in `line` from `pos`, adding the heredocs it opens to
+  # `starts`. In an interpolation (`interp`), returns the index after the
+  # `}` that closes it; otherwise, or when the line ends first, nil.
+  def self.scan_code(line, pos, starts, interp)
+    kind = :op    # what precedes: :op (start, operator), :ident or :value
+    spaced = true # whether a blank follows it
+    braces = 0
+    while pos < line.length
+      c = line[pos]
+      if c == ' ' || c == "\t"
+        spaced = true
+        pos += 1
+        next
+      end
+      after = nil # the index after a literal that closes on this line
+      if c == '#'
+        return nil
+      elsif c == '"' || c == '`'
+        after = literal_end(line, pos + 1, c, nil, starts, true)
+      elsif c == "'"
+        after = literal_end(line, pos + 1, c, nil, starts, false)
+      elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
+        after = literal_end(line, pos + 1, '/', nil, starts, true)
+      elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
+        open = m[0][-1]
+        close = PAIRS[open]
+        after = literal_end(line, pos + m[0].length, close || open, close ? open : nil,
+                            starts, !%w[q w i s].include?(m[1]))
+      elsif c == '<' && line[pos + 1] == '<'
+        m = line[pos..-1].match(HEREDOC_START)
+        quoted = !m.nil? && !m[2].to_s.empty?
+        id = m && (quoted ? m[3].to_s : m[4])
+        if m && expression_start?(kind, spaced, line[pos + 2]) &&
+           (!m[1].empty? || quoted || id == id.upcase)
+          starts << [id, !m[1].empty?]
+          after = pos + m[0].length
+        else
+          pos += 2
+          kind = :op
+          spaced = false
+          next
+        end
+      elsif c.match(/^[A-Za-z0-9_]$/)
+        word_end = pos
+        word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
+        word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
+        word = line[pos...word_end]
+        kind = if '0123456789'.include?(c) || word == 'class' # `class <<ENV`
+                 :value
+               elsif EXPRESSION_KEYWORDS.include?(word)
+                 :op
+               else
+                 :ident
+               end
+        spaced = false
+        pos = word_end
+        next
+      elsif c == '{'
+        braces += 1
+        kind = :op
+        spaced = false
+        pos += 1
+        next
+      elsif c == '}'
+        return pos + 1 if interp && braces == 0
+        braces -= 1
+        after = pos + 1
+      elsif ')]'.include?(c)
+        after = pos + 1
+      else
+        kind = :op
+        spaced = false
+        pos += 1
+        next
+      end
+      return nil if after.nil?
+      kind = :value
+      spaced = false
+      pos = after
+    end
+    nil
+  end
+
+  # A percent literal's opening: `%q(`, `%w[`, `%r{`, ... or a bare `%`
+  # with any delimiter but `=` (`x %= 2`).
+  PERCENT_START = /^%([qQwWiIrsx]?)[^A-Za-z0-9 \t=]/
+  PAIRS = { '(' => ')', '[' => ']', '{' => '}', '<' => '>' }
+
+  # Whether a literal (or a heredoc) can start at a token whose next
+  # character is `nxt`, after a token of `kind`. After an identifier it is
+  # an argument only with a blank before it and none after (`puts <<~X`,
+  # `foo /x/`); otherwise it is an operator (`a / b`, `n<<X`, `x % 2`).
+  def self.expression_start?(kind, spaced, nxt)
+    return true if kind == :op
+    return false if kind == :value
+    spaced && !nxt.nil? && nxt != ' ' && nxt != "\t" && nxt != '='
+  end
+
+  # The index after the `close` that ends a literal whose body starts at
+  # `from`, or nil when it does not end on this line. `open` (for bracket
+  # delimiters) nests. With `interp`, the code in #{...} is scanned for
+  # heredocs, so quotes inside it do not end the literal.
+  def self.literal_end(line, from, close, open, starts, interp)
+    depth = 0
+    i = from
+    while i < line.length
+      c = line[i]
+      if c == '\\'
+        i += 2
+        next
+      end
+      if interp && c == '#' && line[i + 1] == '{'
+        i = scan_code(line, i + 2, starts, true)
+        return nil if i.nil?
+        next
+      end
+      if c == close
+        return i + 1 if depth == 0
+        depth -= 1
+      elsif open && c == open
+        depth += 1
+      end
+      i += 1
+    end
+    nil
   end
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]
@@ -220,7 +390,26 @@ module PicoRubyLibs
       out
     end
 
-    def expand(code, base = nil)
+    # Expands one text/ruby-app script and yields the result (to start it).
+    # When expanding or the block fails, the libraries it had marked as loaded
+    # are forgotten, so a later script inlines them itself. `where` names the
+    # script in error messages.
+    def expand_script(code, base = nil, where = nil)
+      saved = @loaded.dup
+      begin
+        out = expand(code, base, where)
+        yield out if block_given?
+        out
+      rescue => e
+        @loaded = saved
+        raise e
+      end
+    end
+
+    # A failed require raises an Error whose message ends with a
+    # "from require 'name' at file:line" line for each require that led to it.
+    def expand(code, base = nil, where = nil)
+      where ||= base || 'script'
       # The file being expanded counts as loaded, so a circular
       # require_relative back to it (e.g. from a script's own src) is dropped.
       @loaded[base] = true if base
@@ -234,19 +423,24 @@ module PicoRubyLibs
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
-        lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
-        if lib.nil?
-          out << line
-        elsif @loaded[lib.id]
-          out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
-        else
-          # Marked before expanding its body, so a circular require is
-          # dropped like Ruby's require does for a file that is loading.
-          @loaded[lib.id] = true
-          body = expand(source(lib.url), lib.url)
-          out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
-          out << body.sub(/\n+$/, '')
-          out << "# --- end #{req.name} ---"
+        begin
+          lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
+          if lib.nil?
+            out << line
+          elsif @loaded[lib.id]
+            out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
+          else
+            # Marked before expanding its body, so a circular require is
+            # dropped like Ruby's require does for a file that is loading.
+            @loaded[lib.id] = true
+            body = expand(source(lib.url), lib.url)
+            out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
+            out << body.sub(/\n+$/, '')
+            out << "# --- end #{req.name} ---"
+          end
+        rescue => e
+          kind = req.relative? ? 'require_relative' : 'require'
+          raise Error, "#{e.message}\n  from #{kind} '#{req.name}' at #{where}:#{req.index + 1}"
         end
       end
       out.concat(lines[nxt..-1] || [])
@@ -359,7 +553,8 @@ module PicoRubyLibs
 
     # [[code, filename, URL or nil]] for each text/ruby-app script, in
     # order. The URL (the `src`, made absolute by the DOM) is the base of the
-    # script's require_relative.
+    # script's require_relative. The code is nil when the src cannot be
+    # fetched.
     def app_scripts
       n = 0
       JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
@@ -369,8 +564,13 @@ module PicoRubyLibs
         if src.empty?
           [el[:textContent].to_s, name, nil]
         else
-          code = fetch_text(src)
-          raise Error, "failed to load #{src}" if code.nil?
+          # A rejected fetch (network or CORS error) raises at the await.
+          # Return nil so only this script is skipped.
+          code = begin
+            fetch_text(src)
+          rescue => e
+            nil
+          end
           [code, name, src]
         end
       end
@@ -386,6 +586,10 @@ module PicoRubyLibs
       JS
     end
 
+    def report_error(message)
+      eval_with({ 'arg' => message }, 'console.error(arg)')
+    end
+
     private
 
     # Evaluates `body` with `args` ({ name => value }) passed through
@@ -397,12 +601,28 @@ module PicoRubyLibs
     end
   end
 
+  # Expands and starts each text/ruby-app script in document order. A script
+  # that fails to expand is reported with io.report_error and skipped; the
+  # others still start.
   def self.boot(io = BrowserIO.new)
-    imports, cdn = io.import_map
-    scripts = io.app_scripts
-    expanded = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
-                       .expand_all(scripts.map { |s| s[0] }, scripts.map { |s| s[2] })
-    expanded.each_with_index { |code, i| io.create_task(code, scripts[i][1]) }
+    begin
+      imports, cdn = io.import_map
+      scripts = io.app_scripts
+    rescue => e
+      io.report_error("picoruby-libs: no script was started: #{e.message}")
+      return
+    end
+    expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
+    scripts.each_with_index do |script, i|
+      code, filename, url = script
+      label = "script ##{i + 1}" + (filename ? " (#{filename})" : '')
+      begin
+        raise Error, "failed to load #{url}" if code.nil?
+        expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
+      rescue => e
+        io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
+      end
+    end
   end
 end
 
