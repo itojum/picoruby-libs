@@ -499,15 +499,28 @@ module PicoRubyLibs
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
 
+      # Resolve every require of this file first and start fetching their
+      # files together, then inline them in order. A failure is raised when
+      # its require is reached, so errors still come in file order.
+      resolved = requires.map do |req|
+        begin
+          [req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name), nil]
+        rescue => e
+          [nil, e]
+        end
+      end
+      prefetch(resolved.map { |r| r[0] })
+
       lines = code.split("\n")
       out = []
       nxt = 0
-      requires.each do |req|
+      requires.each_with_index do |req, i|
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
         begin
-          lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
+          lib, error = resolved[i]
+          raise error if error
           if lib.nil?
             out << line
           elsif @loaded[lib.id] || @loaded[lib.url]
@@ -539,6 +552,20 @@ module PicoRubyLibs
 
     private
 
+    # Tells io which files are about to be read, so it can fetch them in
+    # parallel. Files already read or already inlined in this script are
+    # left out, and so are files with an integrity hash, which source
+    # fetches with the hash so the browser checks them.
+    def prefetch(libs)
+      urls = []
+      libs.each do |lib|
+        next if lib.nil? || @loaded[lib.id] || @sources.key?(lib.url) || urls.include?(lib.url)
+        next if integrity_of(lib)
+        urls << lib.url
+      end
+      @resolver.io.prefetch(urls) unless urls.empty?
+    end
+
     # The text of `lib`, from its URL or else from the first mirror that has
     # it.
     #
@@ -546,19 +573,27 @@ module PicoRubyLibs
     # the fetched file against it, and a file that does not match counts as
     # not fetched.
     def source(lib)
-      @sources[lib.url] ||= begin
-        urls = [lib.url] + lib.mirrors
-        sri = @resolver.integrity(urls)
+      urls = [lib.url] + lib.mirrors
+      sri = integrity_of(lib)
+      unless @sources.key?(lib.url)
         text = nil
         urls.each do |url|
           text = sri ? @resolver.io.fetch_text(url, sri) : @resolver.io.fetch_text(url)
           break unless text.nil?
         end
-        if text.nil?
-          raise Error, "failed to load #{lib.url}" + (sri ? " (or it does not match its integrity #{sri})" : '')
-        end
-        text
+        @sources[lib.url] = text
       end
+      text = @sources[lib.url]
+      if text.nil?
+        raise Error, "failed to load #{lib.url}" + (sri ? " (or it does not match its integrity #{sri})" : '')
+      end
+      text
+    end
+
+    # The import map's integrity hash for `lib`, when the resolver has one.
+    def integrity_of(lib)
+      return nil unless @resolver.respond_to?(:integrity)
+      @resolver.integrity([lib.url] + lib.mirrors)
     end
   end
 
@@ -599,12 +634,35 @@ module PicoRubyLibs
 
   # Network and DOM access through PicoRuby.wasm's JS bridge.
   class BrowserIO
+    # Starts fetching `urls` at once without waiting. fetch_text then takes
+    # the result of a prefetched URL instead of fetching it again.
+    # The pending fetches stay in window.__picoruby_libs_fetches until
+    # fetch_text takes them.
+    def prefetch(urls)
+      eval_with({ 'arg' => urls.join("\n") }, <<~JS)
+        (() => {
+          const fetches = window.__picoruby_libs_fetches = window.__picoruby_libs_fetches || {};
+          arg.split(String.fromCharCode(10)).forEach(url => {
+            if (url && !fetches[url]) {
+              fetches[url] = fetch(url).then(r => r.ok ? r.text() : null).catch(() => null);
+            }
+          });
+        })()
+      JS
+    end
+
     # A fetch with `integrity` fails (nil) when the file does not match it.
+    # It never takes a prefetched result, which the browser did not check.
     def fetch_text(url, integrity = nil)
       eval_with({ 'arg' => url, 'integrity' => integrity }, <<~JS).await
-        fetch(arg, integrity ? { integrity } : {})
-          .then(r => r.ok ? r.text() : null)
-          .catch(() => null)
+        (() => {
+          const fetches = window.__picoruby_libs_fetches || {};
+          const pending = integrity ? null : fetches[arg];
+          delete fetches[arg];
+          return pending || fetch(arg, integrity ? { integrity } : {})
+            .then(r => r.ok ? r.text() : null)
+            .catch(() => null);
+        })()
       JS
     end
 
@@ -677,13 +735,15 @@ module PicoRubyLibs
     # script's require_relative. The code is nil when the src cannot be
     # fetched.
     def app_scripts
-      n = 0
-      JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
-        n += 1
-        src = el[:src].to_s
-        name = PicoRubyLibs.script_filename(src, n)
+      elements = JS.document.querySelectorAll(APP_SCRIPT).to_a
+      srcs = elements.map { |el| el[:src].to_s }
+      prefetch(srcs.reject { |src| src.empty? })
+      scripts = []
+      elements.each_with_index do |el, i|
+        src = srcs[i]
+        name = PicoRubyLibs.script_filename(src, i + 1)
         if src.empty?
-          [el[:textContent].to_s, name, nil]
+          scripts << [el[:textContent].to_s, name, nil]
         else
           # A rejected fetch (network or CORS error) raises at the await.
           # Return nil so only this script is skipped.
@@ -692,9 +752,10 @@ module PicoRubyLibs
           rescue => e
             nil
           end
-          [code, name, src]
+          scripts << [code, name, src]
         end
       end
+      scripts
     end
 
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a

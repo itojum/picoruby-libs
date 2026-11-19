@@ -181,6 +181,33 @@ The loader dispatches events on `document` so JavaScript on the page can tell wh
 
 Add the listeners before `init.iife.js` runs, so none is missed.
 
+## Bundling ahead of time
+
+To avoid resolving and fetching libraries every time the page opens, expand the requires once with the `picoruby-libs` command (it needs Ruby) and load the result as a plain `text/ruby` script. The page then needs neither the loader nor a CDN:
+
+```bash
+npx picoruby-libs bundle app.rb -o app.bundle.rb --importmap importmap.json
+```
+
+```html
+<script type="text/ruby" src="app.bundle.rb"></script>
+<script src="https://cdn.jsdelivr.net/npm/@picoruby/wasm-wasi@4.0.5/dist/init.iife.js"></script>
+```
+
+It expands `require` and `require_relative` exactly as the loader does in the browser, with the same rules.
+
+| Option | Meaning |
+|--------|---------|
+| `-o FILE` | Write the result to FILE (default: standard output). |
+| `--importmap FILE` | An import map as JSON (`{ "imports": ..., "cdn": ... }`, the content of a `text/ruby-importmap` script). Relative URLs in it are relative to FILE. |
+| `--cdn URL` | The npm CDN (default: the import map's `"cdn"`, or jsDelivr). |
+| `--lockfile FILE` | The lockfile (default: `picoruby-libs.lock.json` next to the app). |
+| `--no-lockfile` | Neither read nor write a lockfile. |
+| `--frozen` | Fail instead of resolving or fetching anything that is not in the lockfile, and leave it unchanged (for CI). |
+| `--update` | Ignore the lockfile and resolve everything again. |
+
+The lockfile records, for each required name, its import-map value and the URL it resolved to, and the `sha384` integrity of every library file. Commit it. Later runs take locked names from it without asking npm, and fail when a fetched file no longer matches its integrity. A name whose import-map value changed is resolved again. Files in the app's own directory are not locked.
+
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.
