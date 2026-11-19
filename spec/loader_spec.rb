@@ -536,6 +536,19 @@ RSpec.describe PicoRubyLibs do
       end
     end
 
+    it 'inlines one release of a package even when its entry is first reached by path' do
+      files = {
+        "#{cdn}pkg@1.0.0/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@2.0.0/package.json" => { 'name' => 'pkg', 'version' => '2.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@1.0.0/lib/pkg.rb" => 'V = 1',
+        "#{cdn}pkg@2.0.0/lib/pkg.rb" => 'V = 2',
+      }
+      r = resolver(files, imports: { 'p1' => 'npm:pkg@1.0.0/lib/pkg.rb', 'one' => 'npm:pkg@1.0.0', 'two' => 'npm:pkg@2.0.0' })
+      out = described_class.new(r).expand("require 'p1'\nrequire 'one'\nrequire 'two'")
+      expect(out).to include('V = 1')
+      expect(out).not_to include('V = 2')
+    end
+
     it "raises when a library's file cannot be loaded" do
       expander = described_class.new(resolver(libraries(nil, '')))
       expect { expander.expand("require 'a'") }.to raise_error(PicoRubyLibs::Error, /failed to load/)
