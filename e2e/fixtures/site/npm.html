@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>npm libraries</title></head>
+<body>
+  <p id="out"></p>
+
+  <script type="text/ruby-importmap">
+    {
+      "cdn": "https://cdn.picoruby-libs.test/npm/",
+      "imports": {
+        "greeter": "npm:greeter@1.0.0",
+        "shout": "npm:shout@2.0.0"
+      }
+    }
+  </script>
+  <script type="text/ruby" src="/loader.rb"></script>
+  <script type="text/ruby-app">
+    require 'greeter'
+
+    message = Greeter.greet('PicoRuby')
+    JS.document.getElementById('out')[:textContent] = message
+    puts "E2E greet: #{message}"
+    puts "E2E await: #{Greeter.later('after a Promise')}"
+    puts 'E2E done'
+  </script>
+
+  <script src="{{PICORUBY_WASM}}/init.iife.js"></script>
+</body>
+</html>
