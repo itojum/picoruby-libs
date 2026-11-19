@@ -154,7 +154,15 @@ To make sure the files you load are the ones you reviewed, give them [Subresourc
   </script>
   ```
 
-  Use the exact URL, with the exact version: the loader writes it in the `# --- picoruby-libs: name (url) ---` comment around each library. With several CDNs, a hash given for the file on any of them is checked on all of them. Files without a hash are fetched as before.
+  Use the exact URL, with the exact version: the loader writes it in the `# --- picoruby-libs: name (url) ---` comment around each library. With several CDNs, a hash given for the file on any of them is checked on all of them.
+
+  Give a hash to every file of a package, including the ones it loads with `require_relative`. Once any file of a package has a hash, a file of that package without one is an error. This matters because the `package.json` that picks the entry file (and the exact version) is not checked: a changed `package.json` could otherwise point the loader at a file you never hashed. For the strictest setup, map the name straight to the hashed file instead of to `npm:`, so no `package.json` is read:
+
+  ```json
+  { "imports": { "mylib": "https://cdn.jsdelivr.net/npm/mylib@1.2.3/lib/mylib.rb" } }
+  ```
+
+  Files of packages without any hash are fetched as before. `"integrity"` needs a loader newer than 0.2.0, which ignores it: until a release includes it, serve `loader.rb` from this repository yourself.
 - **The loader** (`loader.rb`) is a `text/ruby` script that PicoRuby.wasm fetches itself, so an `integrity` attribute on its tag is not checked. Pin its version, or serve a copy from your own site.
 
 Compute a hash with:
