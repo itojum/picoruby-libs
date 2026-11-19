@@ -85,6 +85,105 @@ RSpec.describe PicoRubyLibs do
       expect(found).to eq [[0, 'mylib'], [1, 'js'], [2, 'foo'], [8, './local']]
     end
 
+    it 'skips the bodies of heredocs' do
+      code = [
+        'HELP = <<~TXT',
+        "  require 'in_squiggly'",
+        'TXT',
+        "require 'a'",
+        "x = <<-'EOS'",
+        "require 'in_dash'",
+        '  EOS',
+        'y = <<RAW',
+        "require 'in_bare'",
+        '  RAW',
+        "require 'still_in_bare'",
+        'RAW',
+        "require 'b'",
+        'foo(<<~ONE, <<~"TWO")',
+        "  require 'in_one'",
+        'ONE',
+        "  require 'in_two'",
+        'TWO',
+        "require 'c'",
+      ].join("\n")
+
+      found = described_class.find_requires(code).map(&:name)
+      expect(found).to eq %w[a b c]
+    end
+
+    it 'does not take a shift, a string or a comment for a heredoc' do
+      code = [
+        'list <<item',
+        'class << self',
+        '# see <<~EOS',
+        'x = 1 # see <<~EOS',
+        'puts "<<~EOS"',
+        "puts 'a <<-EOS', `<<EOS`",
+        'n = 1 <<BITS',
+        'n = (m) <<BITS',
+        'n = m<<BITS',
+        "require 'a'",
+        'EOS',
+        'BITS',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'closes an indentable heredoc only on a terminator without trailing blanks' do
+      code = "h = <<~EOS\nEOS \nrequire 'literal'\n  EOS\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'steps over regexps and percent literals' do
+      code = [
+        'x = /<<~EOS/',
+        'y = %q{<<~EOS}',
+        'w = %w[<<~EOS a]',
+        'z = a / 2 + c / 3 <<X',
+        "require 'a'",
+        'puts %q{#}, <<~EOS',
+        "require 'in_heredoc'",
+        'EOS',
+        'q = n % m',
+        "require 'b'",
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq %w[a b]
+    end
+
+    it 'takes << after an identifier ending in a digit for a heredoc' do
+      code = "log2 <<~EOS\nrequire 'in_heredoc'\nEOS\nn = 2 <<X\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'reads quoted delimiters, interpolation, keywords and percent delimiters' do
+      code = [
+        "help = <<~'END-TEXT'", "require 'l1'", 'END-TEXT',
+        'text = "#{<<~EOS}"', "require 'l2'", 'EOS',
+        'puts "#{h["#"]}", <<~EOS', "require 'l3'", 'EOS',
+        'def help', 'return<<~EOS', "require 'l4'", 'EOS', 'end',
+        's = %$<<~EOS$',
+        't = %(#{<<~EOS})', "require 'l6'", 'EOS',
+        "u = %q(\#{<<~EOS})",
+        'puts %:#:, <<~EOS', "require 'l5'", 'EOS',
+        'x %= 2',
+        'class <<ENV',
+        "require 'real'",
+        'end',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'reads CRLF source' do
+      code = "h = <<~EOS\r\ntext\r\nEOS\r\nrequire 'real'\r\n"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'finds heredocs after a string or as a method argument' do
+      code = "puts 'x', <<~A\nrequire 'in_a'\nA\nputs <<B\nrequire 'in_b'\nB\nrequire 'c'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['c']
+    end
+
     it 'finds require_relative lines and marks them relative' do
       code = "require_relative 'a'\n  require_relative('../b.rb') # c\nrequire 'c'"
       found = described_class.find_requires(code).map { |r| [r.index, r.name, r.relative?] }
@@ -101,6 +200,24 @@ RSpec.describe PicoRubyLibs do
     it 'keeps the @ of a scoped package' do
       expect(described_class.parse_spec('@a/b@1')).to eq ['@a/b', '1']
       expect(described_class.parse_spec('@a/b')).to eq ['@a/b', nil]
+    end
+  end
+
+  describe '.script_filename' do
+    it 'names an inline script by its position on the page' do
+      expect(described_class.script_filename('', 1)).to eq 'inline-1.rb'
+      expect(described_class.script_filename('', 3)).to eq 'inline-3.rb'
+    end
+
+    it 'takes the last segment of the src path, without query or fragment' do
+      expect(described_class.script_filename('https://site.test/game/app.rb', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb?v=2', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb#main', 1)).to eq 'app.rb'
+      expect(described_class.script_filename('https://site.test/game/app.rb?a=b/c#d/e', 1)).to eq 'app.rb'
+    end
+
+    it 'falls back to the position when the path ends in a slash' do
+      expect(described_class.script_filename('https://site.test/game/?v=2', 2)).to eq 'script-2.rb'
     end
   end
 
@@ -422,6 +539,96 @@ RSpec.describe PicoRubyLibs do
     it "raises when a library's file cannot be loaded" do
       expander = described_class.new(resolver(libraries(nil, '')))
       expect { expander.expand("require 'a'") }.to raise_error(PicoRubyLibs::Error, /failed to load/)
+    end
+
+    it 'names each require that led to a failure, with its file and line' do
+      expander = described_class.new(resolver(libraries("require 'js'\nrequire 'b'", nil)))
+      expect { expander.expand("x = 1\nrequire 'a'", nil, 'script #1') }.to raise_error(
+        PicoRubyLibs::Error,
+        "failed to load #{cdn}b@1.0.0/b.rb\n" \
+        "  from require 'b' at #{cdn}a@1.0.0/a.rb:2\n" \
+        "  from require 'a' at script #1:2",
+      )
+    end
+  end
+
+  describe '.boot' do
+    # Stands in for BrowserIO: scripts are [code, filename, url] and the
+    # started tasks and reported errors are recorded.
+    let(:boot_io_class) do
+      Class.new(fake_io_class) do
+        attr_reader :tasks, :errors
+
+        def initialize(files, scripts, imports: {}, cdn: nil)
+          super(files)
+          @scripts = scripts
+          @imports = imports
+          @cdn = cdn
+          @tasks = []
+          @errors = []
+        end
+
+        def import_map = [@imports, @cdn]
+        def app_scripts = @scripts
+        def create_task(code, filename) = @tasks << [code, filename]
+        def report_error(message) = @errors << message
+      end
+    end
+
+    let(:files) do
+      package('a', '1.0.0', 'picoruby' => 'a.rb')
+        .merge(package('b', '1.0.0', 'picoruby' => 'b.rb'))
+        .merge("#{cdn}a@1.0.0/a.rb" => 'A = 1', "#{cdn}b@1.0.0/b.rb" => "require 'gone'\nB = 1")
+        .merge(package('gone', '1.0.0', 'picoruby' => 'gone.rb'))
+    end
+
+    def boot(scripts)
+      io = boot_io_class.new(files, scripts, imports: npm_imports(files), cdn: cdn)
+      described_class.boot(io)
+      io
+    end
+
+    it 'starts each script as its own task' do
+      io = boot([["require 'a'\nputs A", nil, nil], ['puts 2', 'two.rb', 'https://site.test/two.rb']])
+      expect(io.tasks.map(&:last)).to eq [nil, 'two.rb']
+      expect(io.tasks[0][0]).to include('A = 1')
+      expect(io.errors).to be_empty
+    end
+
+    it 'skips only the script that fails, and reports where it failed' do
+      io = boot([['puts 1', nil, nil], ["\nrequire 'b'", 'main.rb', 'https://site.test/main.rb'], ['puts 3', nil, nil]])
+      expect(io.tasks.map(&:first)).to eq ['puts 1', 'puts 3']
+      expect(io.errors.size).to eq 1
+      expect(io.errors[0]).to start_with('picoruby-libs: script #2 (main.rb) was not started: ')
+      expect(io.errors[0]).to include("failed to load #{cdn}gone@1.0.0/gone.rb")
+      expect(io.errors[0]).to include("from require 'gone' at #{cdn}b@1.0.0/b.rb:1")
+      expect(io.errors[0]).to include("from require 'b' at https://site.test/main.rb:2")
+    end
+
+    it "inlines in a later script the libraries a failed script had marked as loaded" do
+      io = boot([["require 'a'\nrequire 'b'", nil, nil], ["require 'a'\nputs A", nil, nil]])
+      expect(io.errors[0]).to include("from require 'b' at script #1:2")
+      expect(io.tasks.size).to eq 1
+      expect(io.tasks[0][0]).to include('A = 1')
+    end
+
+    it 'inlines into a later script the libraries of a script whose task could not be created' do
+      io = boot_io_class.new(files, [["require 'a'\nputs 1", nil, nil], ["require 'a'\nputs 2", nil, nil]],
+                             imports: npm_imports(files), cdn: cdn)
+      def io.create_task(code, filename)
+        raise 'no task' if code.end_with?('puts 1')
+        super
+      end
+      described_class.boot(io)
+      expect(io.errors[0]).to include('script #1 was not started: no task')
+      expect(io.tasks.size).to eq 1
+      expect(io.tasks[0][0]).to include('A = 1')
+    end
+
+    it 'reports a script whose src cannot be fetched and starts the others' do
+      io = boot([[nil, 'missing.rb', 'https://site.test/missing.rb'], ['puts 2', nil, nil]])
+      expect(io.errors).to eq ['picoruby-libs: script #1 (missing.rb) was not started: failed to load https://site.test/missing.rb']
+      expect(io.tasks.map(&:first)).to eq ['puts 2']
     end
   end
 end
