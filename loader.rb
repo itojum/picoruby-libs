@@ -432,10 +432,13 @@ module PicoRubyLibs
 
   # ---------------------------------------------------------------- expanding
 
-  # Rewrites the scripts in order. Each library is inlined once, at its first
-  # require in document order; later requires of it are dropped. Requires
-  # inside a library are expanded the same way, so a library can depend on
-  # another one by requiring it.
+  # Rewrites the scripts. Each script gets its own copy of every library it
+  # requires, inlined at its first require in that script; later requires of
+  # it in the same script are dropped. Scripts run as separate tasks that can
+  # interleave at an `await`, so a library inlined only into an earlier script
+  # might not be defined yet when a later one uses it. Requires inside a
+  # library are expanded the same way, so a library can depend on another one
+  # by requiring it. Fetched files are cached, so each is fetched once.
   class Expander
     def initialize(resolver)
       @resolver = resolver
@@ -447,24 +450,18 @@ module PicoRubyLibs
     # (nil for a script written in the page).
     def expand_all(codes, bases = [])
       out = []
-      codes.each_with_index { |code, i| out << expand(code, bases[i]) }
+      codes.each_with_index { |code, i| out << expand_script(code, bases[i]) }
       out
     end
 
-    # Expands one text/ruby-app script and yields the result (to start it).
-    # When expanding or the block fails, the libraries it had marked as loaded
-    # are forgotten, so a later script inlines them itself. `where` names the
-    # script in error messages.
+    # Expands one text/ruby-app script, inlining every library it requires
+    # whether or not an earlier script has it too, and yields the result (to
+    # start it). `where` names the script in error messages.
     def expand_script(code, base = nil, where = nil)
-      saved = @loaded.dup
-      begin
-        out = expand(code, base, where)
-        yield out if block_given?
-        out
-      rescue => e
-        @loaded = saved
-        raise e
-      end
+      @loaded = {}
+      out = expand(code, base, where)
+      yield out if block_given?
+      out
     end
 
     # A failed require raises an Error whose message ends with a
@@ -545,6 +542,15 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # JavaScript that reads `names` from window.__picoruby_libs_<name> into
+  # local constants, deletes those globals, and returns the value of `body`
+  # (an expression that uses the constants).
+  def self.js_with_args(names, body)
+    reads = names.map { |n| "#{n} = window.__picoruby_libs_#{n}" }.join(', ')
+    deletes = names.map { |n| "delete window.__picoruby_libs_#{n};" }.join(' ')
+    "(() => { const #{reads}; #{deletes} return (#{body}); })()"
+  end
+
   # The file name PicoRuby reports in errors for the `n`th (1-based)
   # text/ruby-app script on the page: the last segment of the `src` URL's
   # path, without query or fragment, or `inline-n.rb` for an inline script.
@@ -570,11 +576,8 @@ module PicoRubyLibs
   class BrowserIO
     # A fetch with `integrity` fails (nil) when the file does not match it.
     def fetch_text(url, integrity = nil)
-      JS.global[:__picoruby_libs_arg] = url
-      JS.global[:__picoruby_libs_integrity] = integrity
-      JS.eval(<<~JS).await
-        fetch(window.__picoruby_libs_arg,
-              window.__picoruby_libs_integrity ? { integrity: window.__picoruby_libs_integrity } : {})
+      eval_with({ 'arg' => url, 'integrity' => integrity }, <<~JS).await
+        fetch(arg, integrity ? { integrity } : {})
           .then(r => r.ok ? r.text() : null)
           .catch(() => null)
       JS
@@ -582,9 +585,8 @@ module PicoRubyLibs
 
     # Only the package.json fields the resolver reads, as a Hash.
     def fetch_json(url)
-      JS.global[:__picoruby_libs_arg] = url
-      pkg = JS.eval(<<~JS).await
-        fetch(window.__picoruby_libs_arg)
+      pkg = eval_with({ 'arg' => url }, <<~JS).await
+        fetch(arg)
           .then(r => r.ok ? r.json() : null)
           .then(p => p && {
             name: p.name, version: p.version, main: p.main,
@@ -597,9 +599,7 @@ module PicoRubyLibs
     end
 
     def absolute_url(path, base = nil)
-      JS.global[:__picoruby_libs_arg] = path
-      JS.global[:__picoruby_libs_base] = base
-      JS.eval('new URL(window.__picoruby_libs_arg, window.__picoruby_libs_base || document.baseURI).href')
+      eval_with({ 'arg' => path, 'base' => base }, 'new URL(arg, base || document.baseURI).href')
     end
 
     # [imports Hash, CDN list or nil, integrity Hash] from every
@@ -670,32 +670,64 @@ module PicoRubyLibs
 
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
+    # Raises Error when PicoRuby cannot compile the code or create the task
+    # (it returns -1 and prints the reason to the console).
     def create_task(code, filename)
-      JS.global[:__picoruby_libs_arg] = code
-      JS.global[:__picoruby_libs_file] = filename
-      JS.eval(<<~JS)
-        window.__picoruby_libs_file
-          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'],
-                                 [window.__picoruby_libs_arg, window.__picoruby_libs_file])
-          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [window.__picoruby_libs_arg])
+      status = eval_with({ 'arg' => code, 'file' => filename }, <<~JS)
+        String(file
+          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'], [arg, file])
+          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [arg]))
       JS
+      return if status.to_s == '0'
+      raise Error, "PicoRuby could not compile the script or start its task (status #{status}; see the console for the reason)"
     end
 
     def report_error(message)
-      JS.global[:__picoruby_libs_arg] = message
-      JS.eval('console.error(window.__picoruby_libs_arg)')
+      eval_with({ 'arg' => message }, 'console.error(arg)')
+    end
+
+    # Dispatches a CustomEvent named `type` on document, with `detail` (a
+    # String or nil).
+    def dispatch_event(type, detail = nil)
+      eval_with({ 'arg' => type, 'detail' => detail },
+                'document.dispatchEvent(new CustomEvent(arg, { detail: detail }))')
+    end
+
+    private
+
+    # Evaluates `body` with `args` ({ name => value }) passed through
+    # window.__picoruby_libs_<name>, which are removed before `body` runs so
+    # no value (such as a whole expanded script) stays on `window`.
+    def eval_with(args, body)
+      args.each { |name, value| JS.global[('__picoruby_libs_' + name).to_sym] = value }
+      JS.eval(PicoRubyLibs.js_with_args(args.keys, body))
     end
   end
 
+  READY_EVENT = 'picoruby-libs:ready'
+  ERROR_EVENT = 'picoruby-libs:error'
+
   # Expands and starts each text/ruby-app script in document order. A script
-  # that fails to expand is reported with io.report_error and skipped; the
-  # others still start.
+  # that fails to expand is reported and skipped; the others still start.
+  # Each failure is sent to console.error and dispatched on document as a
+  # picoruby-libs:error event whose detail is the message. When every script
+  # has been started or skipped, picoruby-libs:ready is dispatched, once.
   def self.boot(io = BrowserIO.new)
+    start_scripts(io)
+    io.dispatch_event(READY_EVENT)
+  end
+
+  def self.report(io, message)
+    io.report_error(message)
+    io.dispatch_event(ERROR_EVENT, message)
+  end
+
+  def self.start_scripts(io)
     begin
       imports, cdn, integrity = io.import_map
       scripts = io.app_scripts
     rescue => e
-      io.report_error("picoruby-libs: no script was started: #{e.message}")
+      report(io, "picoruby-libs: no script was started: #{e.message}")
       return
     end
     expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn, integrity: integrity))
@@ -706,7 +738,7 @@ module PicoRubyLibs
         raise Error, "failed to load #{url}" if code.nil?
         expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
       rescue => e
-        io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
+        report(io, "picoruby-libs: #{label} was not started: #{e.message}")
       end
     end
   end
