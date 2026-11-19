@@ -172,7 +172,7 @@ module PicoRubyLibs
         # Answered without npm: built-ins, names mapped to false, paths, and
         # names mapped to a URL (resolved against the import map where it is
         # now, so a moved checkout still works). Nothing to lock.
-        return @resolver.resolve(name) unless npm_lookup?(name, import)
+        return @resolver.resolve(name) unless @resolver.npm_name?(name)
 
         entry = @old.requires[name]
         if entry && entry['import'] == import
@@ -238,16 +238,6 @@ module PicoRubyLibs
       def locked_integrity(url)
         same = @resolver.same_files(url).find { |u| @old.integrity.key?(u) }
         same && @old.integrity[same]
-      end
-
-      # Whether resolving `name` (mapped to `import`, nil when unmapped) may
-      # read a package.json from npm. Mirrors the order of Resolver#resolve.
-      def npm_lookup?(name, import)
-        if @imports.key?(name)
-          import.is_a?(String) && import.start_with?('npm:')
-        else
-          !(name.start_with?('.', '/') || BUILTINS.include?(name))
-        end
       end
     end
 

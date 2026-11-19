@@ -5,6 +5,12 @@
 ```html
 <script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs@0.2.0/loader.rb"></script>
 
+<script type="text/ruby-importmap">
+{
+  "imports": { "mylib": "npm:mylib@1.2.3" }
+}
+</script>
+
 <script type="text/ruby-app">
   require 'mylib'
 
@@ -18,6 +24,8 @@
 
 Pin exact versions, as above, rather than `@latest`: a new release of the loader or of PicoRuby.wasm can change how your page behaves. See [Integrity](#integrity) for checking the files you load.
 
+Name every npm library the page uses in a `text/ruby-importmap` script, as above. The loader loads from npm only the names mapped there (see [Why only mapped names](#why-only-mapped-names)).
+
 Write your code in `text/ruby-app` scripts (inline or with `src`), not `text/ruby`: PicoRuby.wasm starts every `text/ruby` script at once, before its requires could be resolved. The loader starts the `text/ruby-app` scripts itself.
 
 ## How it works
@@ -28,14 +36,15 @@ So the loader resolves requires before your code starts:
 
 1. PicoRuby.wasm runs `loader.rb` as an ordinary `text/ruby` script.
 2. The loader reads every `<script type="text/ruby-app">` on the page.
-3. For each line that is a whole `require 'name'` statement, it looks the name up on npm (through jsDelivr) and fetches the package's Ruby entry file.
+3. For each line that is a whole `require 'name'` statement whose name the import map maps to npm, it fetches the package's Ruby entry file (through jsDelivr).
 4. It inlines the library in place of the `require` line and starts each script as one PicoRuby task, in document order. The library runs in the same task as the code that needs it, so `await` works.
 
 Rules:
 
 - Each script gets its own copy of each library it requires, inlined at its first `require` in that script. Later requires of it in the same script are dropped, and so is a circular one, as in Ruby. Scripts run as separate tasks that can interleave at an `await`, so a script never relies on another script having loaded a library first. A library required by several scripts therefore runs its top-level code once per script; its files are fetched once.
-- Requires inside a library are expanded the same way, so a library depends on another by requiring it.
-- A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
+- Requires inside a library are expanded the same way, so a library depends on another by requiring it. The page maps the libraries a library depends on too.
+- A name the import map does not map is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. When such a name is a PicoRuby library on npm, the loader says so in the console, with the line to add to the import map. Known built-ins are not looked up on npm at all.
+- `require 'pkg/lib/x.rb'` loads a file inside the npm package `pkg` when the import map maps `pkg`. The path must stay inside the package: `..`, `\` and `%2e` are refused.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
 - If a script cannot be expanded (a library or its `src` cannot be fetched, for example), that script is not started and the error goes to the browser console with each `require` that led to it, as `from require 'name' at file:line`. The other scripts still start.
 
@@ -68,7 +77,9 @@ A library is an npm package that names its Ruby entry file in `package.json`:
 
 The entry file can load the library's other files with `require_relative`.
 
-`require 'name'` loads the npm package `name`. The version is resolved once from `package.json` and every file is then fetched from that exact version. `require 'name/lib/other.rb'` loads one file of the package from the same version.
+A page uses it by mapping its name in the import map (`"mylib": "npm:mylib@1"`) and calling `require 'mylib'`. The version is resolved once from `package.json` and every file is then fetched from that exact version. `require 'mylib/lib/other.rb'` loads one file of the package from the same version.
+
+When your library requires another npm library, tell its users in your README to map that one too.
 
 ## Import map
 
@@ -89,7 +100,7 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 
 | Value | Meaning |
 |-------|---------|
-| `"npm:pkg"`, `"npm:pkg@ver"` | An npm package, resolved through its `package.json`. It must be a PicoRuby library. |
+| `"npm:pkg"`, `"npm:pkg@ver"` | An npm package, resolved through its `package.json`. It must be a PicoRuby library. Only names mapped this way are loaded from npm. |
 | `"npm:pkg@ver/path.rb"` | A file inside an npm package, fetched from the exact version its `package.json` reports. |
 | any other string | A URL, relative to the page. |
 | `false` | Leave this require to PicoRuby. |
@@ -103,6 +114,27 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 ```
 
 Each package's `package.json` is taken from the first CDN that serves it, and its files come from that CDN, or from the next ones when a fetch fails. Every CDN in the list must serve npm packages as `<cdn><name>@<version>/<path>`, as jsDelivr and unpkg do. A name that is not on npm is looked up on every CDN in the list.
+
+### Why only mapped names
+
+Until 0.2.0, the loader looked up on npm every name that was not a known built-in, and loaded any package there that declared itself a PicoRuby library. Then anyone could publish a package under the name of a gem that the built-in list missed (a new PicoRuby gem, say) and have their code run on every page that requires it (dependency confusion). Mapping each name makes the page say which packages it trusts.
+
+### Migrating from 0.2.0
+
+For every npm library the page loads with `require 'name'`, including the ones those libraries require, add `"name": "npm:name@version"` to `"imports"` in a `text/ruby-importmap` script. The console lists the names that are still missing.
+
+```html
+<script type="text/ruby-importmap">
+{
+  "imports": {
+    "mylib": "npm:mylib@1.2.3",
+    "mylib-dep": "npm:mylib-dep@0.4.0"
+  }
+}
+</script>
+```
+
+Names already mapped, URLs and `false` work as before.
 
 ## Integrity
 

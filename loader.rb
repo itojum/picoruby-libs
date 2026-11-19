@@ -3,6 +3,9 @@
 # Lets Ruby scripts on a page `require` PicoRuby libraries published on npm.
 #
 #   <script type="text/ruby" src="https://cdn.jsdelivr.net/npm/picoruby-libs/loader.rb"></script>
+#   <script type="text/ruby-importmap">
+#     { "imports": { "mylib": "npm:mylib@1.2.3" } }
+#   </script>
 #   <script type="text/ruby-app">
 #     require 'mylib'
 #     MyLib.hello
@@ -17,7 +20,9 @@
 # expanded the same way, with x.rb fetched relative to the requiring file.
 #
 # A library is an npm package whose package.json names its Ruby entry file in
-# a "picoruby" field (or a "main" ending in .rb).
+# a "picoruby" field (or a "main" ending in .rb). Only the names the import
+# map maps to npm are loaded from npm, so a package someone publishes under
+# the name of a gem never runs on the page unasked.
 #
 # The code below runs on PicoRuby.wasm and on CRuby (for the tests), so it
 # keeps to what both support. PicoRuby.wasm's Regexp is JavaScript's RegExp:
@@ -27,9 +32,10 @@ module PicoRubyLibs
   DEFAULT_CDN = 'https://cdn.jsdelivr.net/npm/'
 
   # Libraries compiled into PicoRuby.wasm. Their require is left for PicoRuby
-  # without asking npm. Anything else is looked up on npm and left as it is
-  # when no package declares itself a PicoRuby library, so this list only
-  # saves requests. scripts/check-builtins.mjs compares it with the latest
+  # without asking npm. Any other name not in the import map is left for
+  # PicoRuby too, after a look on npm to suggest mapping it when it is a
+  # PicoRuby library there, so this list only saves requests.
+  # scripts/check-builtins.mjs compares it with the latest
   # @picoruby/wasm-wasi (the "Builtins" workflow runs it weekly).
   BUILTINS = %w[
     js json time math base64 base16 yaml jwt machine sandbox picorubyvm
@@ -355,8 +361,10 @@ module PicoRubyLibs
       @floating = {}
     end
 
-    # A Library, or nil when `name` is left to PicoRuby: a built-in, a
-    # relative path, or an npm package that is not a PicoRuby library.
+    # A Library, or nil when `name` is left to PicoRuby: a name mapped to
+    # false, or any name the import map does not map, including built-ins and
+    # relative paths. A file inside a package the import map maps to npm
+    # ("pkg/lib/x.rb" with "pkg": "npm:pkg@1") is loaded from that package.
     # A path without a version inside a package is resolved again each time,
     # since the release it follows can change as libraries are inlined.
     def resolve(name)
@@ -393,6 +401,19 @@ module PicoRubyLibs
       path = dot && dot > 0 ? name : name + '.rb'
       url = @io.absolute_url(path, base)
       library(url, url)
+    end
+
+    # Whether `name` is loaded from npm: the import map maps it to npm, or it
+    # is a path inside a package the import map maps to npm under its own
+    # name. The bundle CLI checks it before reusing a locked entry.
+    def npm_name?(name)
+      if @imports.key?(name)
+        mapped = @imports[name]
+        return mapped.is_a?(String) && mapped.start_with?('npm:')
+      end
+      return false if name.start_with?('.') || name.start_with?('/') || @builtins.include?(name)
+      pkg_spec, path = PicoRubyLibs.split_npm_path(name)
+      !path.empty? && !npm_mapping(PicoRubyLibs.parse_spec(pkg_spec)[0]).nil?
     end
 
     # The SRI hash the import map gives one of `urls`, or the same file on
@@ -434,23 +455,45 @@ module PicoRubyLibs
       if @imports.key?(name)
         mapped = @imports[name]
         return nil if mapped.nil? || mapped == false
-        return resolve_npm(mapped[4..-1], name, true) if mapped.start_with?('npm:')
+        return resolve_npm(mapped[4..-1], name) if mapped.start_with?('npm:')
         url = @io.absolute_url(mapped)
         return Library.new(url, url)
       end
       return nil if name.start_with?('.') || name.start_with?('/')
       return nil if @builtins.include?(name)
-      resolve_npm(name, name, false)
+      return resolve_npm(name, name) if npm_name?(name)
+      suggest_mapping(name) if PicoRubyLibs.split_npm_path(name)[1].empty?
+      nil
     end
 
-    # strict: raise instead of returning nil when it is not a library.
+    # Warns, through io.warn when the io has it, when `name` is a PicoRuby
+    # library on npm, since the loader no longer loads it unless mapped.
+    # The hint keys the mapping by the name as required ("mylib@1.2.3"
+    # too), since import-map keys match require names exactly.
+    def suggest_mapping(name)
+      return unless @io.respond_to?(:warn)
+      pkg_name, version = PicoRubyLibs.parse_spec(name)
+      pkg = package_json(pkg_name, version)
+      return if pkg.nil? || PicoRubyLibs.ruby_entry(pkg).nil?
+      @io.warn("picoruby-libs: require '#{name}' is left to PicoRuby. " \
+               "npm has a PicoRuby library named #{pkg_name}; to load it, add " \
+               "\"#{name}\": \"npm:#{pkg_name}@#{pkg['version']}\" to \"imports\" in a text/ruby-importmap script.")
+    end
+
+    # Raises unless `spec` names a PicoRuby library, or a file inside an npm
+    # package.
     #
     # Every file is fetched from the exact version package.json reports, so
     # "latest" resolves once and every file of a package comes from the same
     # release. A file inside a package ("pkg/lib/x.rb") is pinned the same
     # way.
-    def resolve_npm(spec, require_name, strict)
+    def resolve_npm(spec, require_name)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
+      # Checked before anything is fetched: a path that climbs out of the
+      # package would load one the import map does not name.
+      if path.split('/').include?('..') || path.include?('\\') || path.downcase.include?('%2e')
+        raise Error, "#{spec}: a path inside a package cannot use '..', '\\' or '%2e'"
+      end
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
       # Without a version, a path takes the version the import map gives the
       # package, so it matches the entry that mapping loads. Otherwise reuse
@@ -463,24 +506,18 @@ module PicoRubyLibs
       version ||= mapped_version(name) unless path.empty?
       version ||= @pinned[name]
       pkg = package_json(name, version)
-      if pkg.nil?
-        raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if strict
-        return nil
-      end
+      raise Error, "npm package not found: #{spec} (for require '#{require_name}')" if pkg.nil?
       entry = PicoRubyLibs.ruby_entry(pkg)
-      # A file inside a package named in the import map is taken as it is; a
-      # plain require of one must still be a PicoRuby library.
-      if entry.nil? && (path.empty? || !strict)
-        raise Error, "#{spec} is not a PicoRuby library (no \"picoruby\" field in package.json)" if strict
-        return nil
+      if entry.nil? && path.empty?
+        raise Error, "#{spec} is not a PicoRuby library (no \"picoruby\" field in package.json)"
       end
       @pinned[name] ||= pkg['version']
       # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
       # file look like two.
       base = "#{@package_cdn["#{name}@#{pkg['version']}"]}#{pkg['name']}@#{pkg['version']}/"
-      entry_url = entry && @io.absolute_url(entry.sub(/^\.?\//, ''), base)
+      entry_url = entry && inside_package(@io.absolute_url(entry.sub(/^\.?\//, ''), base), base, spec)
       return library(pkg['name'], entry_url) if path.empty?
-      url = @io.absolute_url(path, base)
+      url = inside_package(@io.absolute_url(path, base), base, spec)
       # A path to the entry file is the package itself, so it keeps another
       # release of the package from being inlined too.
       library(url == entry_url ? pkg['name'] : url, url)
@@ -492,6 +529,13 @@ module PicoRubyLibs
       cdn = @cdns.find { |c| url.start_with?(c) }
       return nil if cdn.nil?
       PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(url[cdn.length..-1])[0])
+    end
+
+    # `url`, when it is inside the package directory `base`. A path that
+    # leaves it would load a package the import map does not name.
+    def inside_package(url, base, spec)
+      raise Error, "#{spec}: #{url} is outside the package (#{base})" unless url.start_with?(base)
+      url
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
@@ -514,12 +558,19 @@ module PicoRubyLibs
       pkg
     end
 
-    # The version an import map entry "name": "npm:name@ver" gives `name`.
-    def mapped_version(name)
+    # [name, version or nil] of an import map entry "name": "npm:name@ver"
+    # that maps `name` to the npm package of the same name, or nil.
+    def npm_mapping(name)
       mapped = @imports[name]
       return nil unless mapped.is_a?(String) && mapped.start_with?('npm:')
-      mapped_name, version = PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(mapped[4..-1])[0])
-      mapped_name == name ? version : nil
+      mapping = PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(mapped[4..-1])[0])
+      mapping[0] == name ? mapping : nil
+    end
+
+    # The version an import map entry "name": "npm:name@ver" gives `name`.
+    def mapped_version(name)
+      mapping = npm_mapping(name)
+      mapping ? mapping[1] : nil
     end
   end
 
@@ -756,6 +807,10 @@ module PicoRubyLibs
             .catch(() => null);
         })()
       JS
+    end
+
+    def warn(message)
+      JS.global[:console].warn(message)
     end
 
     # Only the package.json fields the resolver reads, as a Hash.

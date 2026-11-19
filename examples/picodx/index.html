@@ -11,7 +11,7 @@
 <body>
   <canvas id="game" width="640" height="480"></canvas>
 
-  <!-- Optional: pin versions or map names to files. Without it, `require 'picodx'` uses the latest release. -->
+  <!-- Required: the loader loads from npm only the names mapped here. -->
   <script type="text/ruby-importmap">
     { "imports": { "picodx": "npm:picodx@2" } }
   </script>
