@@ -601,4 +601,12 @@ RSpec.describe PicoRubyLibs do
       end
     end
   end
+
+  describe PicoRubyLibs::BrowserIO do
+    it 'makes public every method the loader calls on io' do
+      %i[fetch_text fetch_json absolute_url import_map app_scripts create_task report_error dispatch_event].each do |m|
+        expect(described_class.public_method_defined?(m)).to be(true), "#{m} is not public"
+      end
+    end
+  end
 end
