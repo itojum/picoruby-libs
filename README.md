@@ -146,7 +146,8 @@ The lockfile records, for each required name, its import-map value and the URL i
 
 ## Limitations
 
-- Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.
+- Only `require` lines that are a whole statement are recognized.
+- A library is inlined where its `require` is written, so a `require` / `require_relative` of a library must be at the top level. One indented more than the script's least indented line (inside a `def`, `class` or `if`) raises `PicoRubyLibs::Error` with the file and line, since inlining it there would break the method or define the library under another namespace. Requires of built-in libraries are left to PicoRuby and may be indented.
 - Requires inside heredocs and `=begin`/`=end` comments are left alone, but other multi-line strings (`%q{...}`, `'...'` spanning lines) are not tracked: a line in them that reads as a whole `require` statement is expanded. Heredocs are found by a small heuristic lexer, not a Ruby parser, so unusual code (e.g. `x <<Y` where `x` is a local variable) can be misread.
 - Line numbers in error messages refer to the expanded script. Each library is wrapped in `# --- picoruby-libs: name (url) ---` comments.
 - The loader starts tasks through `picorb_create_task`, the same PicoRuby.wasm function `init.iife.js` uses. It is not a documented API, so a PicoRuby.wasm release could change it. Pin the runtime version for anything you publish.
