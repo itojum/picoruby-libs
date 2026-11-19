@@ -214,6 +214,17 @@ RSpec.describe PicoRubyLibs do
         expect(r.resolve('pkg/lib/extra.rb').url).to eq "#{cdn}pkg@1.4.0/lib/extra.rb"
       end
 
+      it 'pins an unversioned path to the version the import map gives its package, over an earlier pin' do
+        files = {
+          "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+          "#{cdn}pkg@2/package.json" => { 'name' => 'pkg', 'version' => '2.0.0', 'picoruby' => 'lib/pkg.rb' },
+        }
+        r = resolver(files, imports: { 'sub' => 'npm:pkg@1/lib/sub.rb', 'pkg' => 'npm:pkg@2' })
+        expect(r.resolve('sub').url).to eq "#{cdn}pkg@1.0.0/lib/sub.rb"
+        expect(r.resolve('pkg').url).to eq "#{cdn}pkg@2.0.0/lib/pkg.rb"
+        expect(r.resolve('pkg/lib/extra.rb').url).to eq "#{cdn}pkg@2.0.0/lib/extra.rb"
+      end
+
       it 'leaves a name mapped to false to PicoRuby' do
         expect(r.resolve('skipme')).to be_nil
       end
@@ -316,7 +327,8 @@ RSpec.describe PicoRubyLibs do
         "#{cdn}a@1.0.0/lib/a.rb" => 'A = 1',
         "#{cdn}a@1.0.0/lib/b.rb" => "require_relative 'a'\nB = 1",
       )
-      out = described_class.new(resolver(files)).expand("require 'a'\nrequire 'a/lib/a.rb'\nrequire 'a/lib/b.rb'")
+      out = described_class.new(resolver(files))
+                           .expand("require 'a'\nrequire 'a/lib/a.rb'\nrequire 'a/lib/./a.rb'\nrequire 'a/lib/b.rb'")
       expect(out.scan('A = 1').size).to eq 1
       expect(out).to include('B = 1')
     end
