@@ -465,7 +465,7 @@ RSpec.describe PicoRubyLibs do
 
       it "prefetches all of a file's requires together, before reading them, keeping the order" do
         io = fake_io_class.new(files)
-        out = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn))
+        out = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn, imports: npm_imports(files)))
                              .expand_script("require 'a'\nrequire 'js'\nrequire 'c'\nrequire 'a'")
         expect(io.prefetches).to eq [["#{cdn}a@1.0.0/a.rb", "#{cdn}c@1.0.0/c.rb"], ["#{cdn}b@1.0.0/b.rb"]]
         expect(io.calls.index("#{cdn}c@1.0.0/c.rb")).to be > io.calls.index("#{cdn}b@1.0.0/b.rb")
@@ -475,14 +475,14 @@ RSpec.describe PicoRubyLibs do
 
       it 'does not prefetch files it has already read' do
         io = fake_io_class.new(files)
-        expander = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn))
+        expander = described_class.new(PicoRubyLibs::Resolver.new(io, cdn: cdn, imports: npm_imports(files)))
         expander.expand_all(["require 'a'", "require 'a'\nrequire 'c'"])
         expect(io.prefetches.flatten.tally.values).to all(eq 1)
       end
 
       it 'reports errors in file order even when a later require fails to resolve first' do
         io = fake_io_class.new(files.merge("#{cdn}a@1.0.0/a.rb" => nil))
-        r = PicoRubyLibs::Resolver.new(io, cdn: cdn, imports: { 'bad' => 'npm:missing' })
+        r = PicoRubyLibs::Resolver.new(io, cdn: cdn, imports: npm_imports(files).merge('bad' => 'npm:missing'))
         expect { described_class.new(r).expand_script("require 'a'\nrequire 'bad'") }
           .to raise_error(PicoRubyLibs::Error, /failed to load .*a\.rb\n  from require 'a' at script:1/)
       end
