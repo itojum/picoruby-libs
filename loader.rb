@@ -152,6 +152,10 @@ module PicoRubyLibs
     case puts print p raise
   ]
 
+  # Keywords that end a value, so a `<<`, `?` or `/` after them is an
+  # operator (`true ? a : b`), and `class`, for `class <<ENV`.
+  VALUE_KEYWORDS = %w[true false nil self class __FILE__ __LINE__]
+
   # Scans code in `line` from `pos`, adding the heredocs it opens to
   # `starts`. In an interpolation (`interp`), returns the index after the
   # `}` that closes it; otherwise, or when the line ends first, nil.
@@ -173,7 +177,7 @@ module PicoRubyLibs
         after = literal_end(line, pos + 1, c, nil, starts, true)
       elsif c == "'"
         after = literal_end(line, pos + 1, c, nil, starts, false)
-      elsif c == '?' && expression_start?(kind, spaced, line[pos + 1]) && char_literal_end(line, pos)
+      elsif c == '?' && kind == :op && char_literal_end(line, pos)
         after = char_literal_end(line, pos) # ?# / ?" / ?\n
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
         after = literal_end(line, pos + 1, '/', nil, starts, true)
@@ -201,7 +205,7 @@ module PicoRubyLibs
         word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
         word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
         word = line[pos...word_end]
-        kind = if '0123456789'.include?(c) || word == 'class' # `class <<ENV`
+        kind = if '0123456789'.include?(c) || VALUE_KEYWORDS.include?(word)
                  :value
                elsif EXPRESSION_KEYWORDS.include?(word)
                  :op
@@ -238,7 +242,9 @@ module PicoRubyLibs
   end
 
   # The index after a character literal (`?a`, `?\\n`) at `pos`, or nil when
-  # the `?` is not one (a ternary's `?`, or `?ab`).
+  # the `?` is not one (`?ab`). Only tried after an operator: after a value
+  # or an identifier (which may be a local variable), `?` is read as a
+  # ternary, as Ruby does for `x ?"#" : y`.
   def self.char_literal_end(line, pos)
     c = line[pos + 1]
     return nil if c.nil? || c == ' ' || c == "\t"
