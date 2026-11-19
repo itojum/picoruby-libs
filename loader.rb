@@ -173,6 +173,8 @@ module PicoRubyLibs
         after = literal_end(line, pos + 1, c, nil, starts, true)
       elsif c == "'"
         after = literal_end(line, pos + 1, c, nil, starts, false)
+      elsif c == '?' && expression_start?(kind, spaced, line[pos + 1]) && char_literal_end(line, pos)
+        after = char_literal_end(line, pos) # ?# / ?" / ?\n
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
         after = literal_end(line, pos + 1, '/', nil, starts, true)
       elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
@@ -233,6 +235,18 @@ module PicoRubyLibs
       pos = after
     end
     nil
+  end
+
+  # The index after a character literal (`?a`, `?\\n`) at `pos`, or nil when
+  # the `?` is not one (a ternary's `?`, or `?ab`).
+  def self.char_literal_end(line, pos)
+    c = line[pos + 1]
+    return nil if c.nil? || c == ' ' || c == "\t"
+    after = c == '\\' ? pos + 3 : pos + 2
+    return nil if after > line.length
+    nxt = line[after]
+    return nil if !nxt.nil? && nxt.match(/^[A-Za-z0-9_]$/) && c.match(/^[A-Za-z0-9_]$/)
+    after
   end
 
   # A percent literal's opening: `%q(`, `%w[`, `%r{`, ... or a bare `%`

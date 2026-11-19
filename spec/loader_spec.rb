@@ -143,6 +143,8 @@ RSpec.describe PicoRubyLibs do
         "u = %q(\#{<<~EOS})",
         'puts %:#:, <<~EOS', "require 'l5'", 'EOS',
         'x %= 2',
+        'c = [?#, ?", ?\\\\, <<~EOS]', "require 'l7'", 'EOS',
+        'y = a ? b : c',
         'class <<ENV',
         "require 'real'",
         'end',
