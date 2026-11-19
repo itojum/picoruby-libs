@@ -1,0 +1,49 @@
+name: Builtins
+
+# Checks that PicoRubyLibs::BUILTINS in loader.rb lists exactly the libraries
+# compiled into PicoRuby.wasm, by running @picoruby/wasm-wasi in headless
+# Chromium. Runs weekly to catch new PicoRuby.wasm releases, and on changes to
+# the list or the check.
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'  # Mondays 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '@picoruby/wasm-wasi version or dist-tag (latest, head, 4.0.5, ...)'
+        default: latest
+  pull_request:
+    paths:
+      - loader.rb
+      - scripts/check-builtins.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/builtins.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Compare BUILTINS with PicoRuby.wasm
+        env:
+          VERSION: ${{ inputs.version || 'latest' }}
+        run: node scripts/check-builtins.mjs --version "$VERSION"

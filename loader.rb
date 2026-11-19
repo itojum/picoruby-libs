@@ -29,10 +29,15 @@ module PicoRubyLibs
   # Libraries compiled into PicoRuby.wasm. Their require is left for PicoRuby
   # without asking npm. Anything else is looked up on npm and left as it is
   # when no package declares itself a PicoRuby library, so this list only
-  # saves requests.
+  # saves requests. scripts/check-builtins.mjs compares it with the latest
+  # @picoruby/wasm-wasi (the "Builtins" workflow runs it weekly).
   BUILTINS = %w[
     js json time math base64 base16 yaml jwt machine sandbox picorubyvm
     funicular markdown drb sqlite3 indexeddb midibase task
+    uri env rng crc pack marshal mbedtls io io/console dir data eval
+    metaprog method objectspace binding sprintf compiler require mruby
+    error dfu array-ext hash-ext kernel-ext numeric-ext object-ext
+    proc-ext string-ext toplevel-ext
   ]
 
   # `require 'x'` / `require('x')` / `require "x"` (or `require_relative`) as
