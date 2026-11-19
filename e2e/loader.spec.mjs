@@ -78,3 +78,15 @@ test('leaves built-in libraries to PicoRuby and starts every script', async ({ p
   // js and json are in BUILTINS, so they are not looked up anywhere.
   expect(run.requests.filter((url) => /\/(js|json)(@|\/package\.json)/.test(url))).toEqual([]);
 });
+
+test('skips and reports scripts that cannot be fetched or compiled, and starts the others', async ({ page }) => {
+  const run = await open(page, '/failures.html');
+  await waitForLogs(run, ['healthy script']);
+  await expect.poll(() => page.evaluate(() => window.e2eEvents.length), { timeout: 30_000 }).toBe(3);
+  const events = await page.evaluate(() => window.e2eEvents);
+  expect(events.map((e) => e[0])).toEqual(['error', 'error', 'ready']);
+  expect(events[0][1]).toContain('script #1 (missing.rb) was not started: failed to load');
+  expect(events[1][1]).toContain('script #2 (inline-2.rb) was not started: PicoRuby could not compile');
+  // Each failure also goes to console.error.
+  expect(run.errors.filter((text) => text.startsWith('picoruby-libs: '))).toEqual(events.slice(0, 2).map((e) => e[1]));
+});
