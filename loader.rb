@@ -408,9 +408,12 @@ module PicoRubyLibs
       # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
       # file look like two.
       base = "#{@package_cdn["#{name}@#{pkg['version']}"]}#{pkg['name']}@#{pkg['version']}/"
-      return library(pkg['name'], @io.absolute_url(entry.sub(/^\.?\//, ''), base)) if path.empty?
+      entry_url = entry && @io.absolute_url(entry.sub(/^\.?\//, ''), base)
+      return library(pkg['name'], entry_url) if path.empty?
       url = @io.absolute_url(path, base)
-      library(url, url)
+      # A path to the entry file is the package itself, so it keeps another
+      # release of the package from being inlined too.
+      library(url == entry_url ? pkg['name'] : url, url)
     end
 
     # A Library whose mirrors are `url` on the other CDNs, when it is on one.

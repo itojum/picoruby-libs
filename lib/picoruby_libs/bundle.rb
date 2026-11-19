@@ -228,6 +228,9 @@ module PicoRubyLibs
         text
       end
 
+      # Files are read one at a time here, so there is nothing to start early.
+      def prefetch(_urls); end
+
       def fetch_json(url)
         @io.fetch_json(url)
       end
