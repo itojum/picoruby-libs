@@ -351,13 +351,37 @@ module PicoRubyLibs
       @packages = {}
       @package_cdn = {}
       @pinned = {}
+      @inlined = {}
+      @floating = {}
     end
 
     # A Library, or nil when `name` is left to PicoRuby: a built-in, a
     # relative path, or an npm package that is not a PicoRuby library.
+    # A path without a version inside a package is resolved again each time,
+    # since the release it follows can change as libraries are inlined.
     def resolve(name)
-      @cache[name] = resolve_uncached(name) unless @cache.key?(name)
+      @cache[name] = resolve_uncached(name) if !@cache.key?(name) || @floating[name]
       @cache[name]
+    end
+
+    # Records that `lib` is being inlined. When it is a package's entry, paths
+    # without a version inside that package follow its release from now on.
+    def inlined(lib)
+      release = npm_release(lib.url)
+      @inlined[release[0]] ||= release[1] if release && release[0] == lib.id
+    end
+
+    # Forgets the releases inlined so far: each script inlines its own
+    # libraries.
+    def new_script
+      @inlined = {}
+    end
+
+    # Pins the package of `url` (a file on the CDN) to its release, as if it
+    # had been resolved here. The bundle CLI calls it for locked libraries.
+    def pin_url(url)
+      release = npm_release(url)
+      @pinned[release[0]] ||= release[1] if release
     end
 
     # The Library of `require_relative name` in the file at `base` (a URL, or
@@ -371,10 +395,37 @@ module PicoRubyLibs
       library(url, url)
     end
 
-    # The SRI hash the import map gives one of `urls`, or nil.
+    # The SRI hash the import map gives one of `urls`, or the same file on
+    # another CDN, or nil.
     def integrity(urls)
-      url = urls.find { |u| @integrity.key?(u) }
+      url = urls.flat_map { |u| same_files(u) }.find { |u| @integrity.key?(u) }
       url ? @integrity[url] : nil
+    end
+
+    # Whether every file of the npm package `url` is in must have a hash:
+    # the import map gives a hash to some file of the package (in any
+    # release). The package.json that picks its files is not hashed, so an
+    # unhashed file could be one a changed package.json slipped in.
+    def integrity_required?(url)
+      release = npm_release(url)
+      return false if release.nil?
+      prefixes = @cdns.map { |c| "#{c}#{release[0]}@" }
+      @integrity.keys.any? { |key| prefixes.any? { |prefix| key.start_with?(prefix) } }
+    end
+
+    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
+    # The bundle CLI builds locked libraries with it.
+    def library(id, url)
+      cdn = @cdns.find { |c| url.start_with?(c) }
+      return Library.new(id, url) if cdn.nil?
+      path = url[cdn.length..-1]
+      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
+    end
+
+    # `url` and the same file on the other CDNs.
+    def same_files(url)
+      lib = library(url, url)
+      [lib.url] + lib.mirrors
     end
 
     private
@@ -405,6 +456,10 @@ module PicoRubyLibs
       # package, so it matches the entry that mapping loads. Otherwise reuse
       # the release already pinned for the package, by its entry or by a
       # path, so require order cannot mix releases.
+      # A path also follows the release already inlined for the package, so
+      # its files match the entry that runs.
+      @floating[require_name] = true if version.nil? && !path.empty?
+      version ||= @inlined[name] unless path.empty?
       version ||= mapped_version(name) unless path.empty?
       version ||= @pinned[name]
       pkg = package_json(name, version)
@@ -431,12 +486,12 @@ module PicoRubyLibs
       library(url == entry_url ? pkg['name'] : url, url)
     end
 
-    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
-    def library(id, url)
+
+    # [package name, version] of a file URL on the CDN, or nil.
+    def npm_release(url)
       cdn = @cdns.find { |c| url.start_with?(c) }
-      return Library.new(id, url) if cdn.nil?
-      path = url[cdn.length..-1]
-      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
+      return nil if cdn.nil?
+      PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(url[cdn.length..-1])[0])
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
@@ -449,7 +504,9 @@ module PicoRubyLibs
       @cdns.each do |cdn|
         pkg = @io.fetch_json("#{cdn}#{key}/package.json")
         next if pkg.nil?
-        @package_cdn["#{name}@#{pkg['version']}"] = cdn
+        # The first CDN chosen for a release stays, so two ranges that reach
+        # the same release give its files the same URLs.
+        @package_cdn["#{name}@#{pkg['version']}"] ||= cdn
         break
       end
       @packages[key] = pkg
@@ -497,6 +554,7 @@ module PicoRubyLibs
     # start it). `where` names the script in error messages.
     def expand_script(code, base = nil, where = nil)
       @loaded = {}
+      @resolver.new_script if @resolver.respond_to?(:new_script)
       out = expand(code, base, where)
       yield out if block_given?
       out
@@ -536,6 +594,9 @@ module PicoRubyLibs
         begin
           lib, error = resolved[i]
           raise error if error
+          # Resolved again now: a library inlined since then may have changed
+          # the release a path inside its package follows.
+          lib = @resolver.resolve(req.name) unless lib.nil? || req.relative?
           if lib.nil?
             out << line
           elsif req.indent.length > top
@@ -553,6 +614,7 @@ module PicoRubyLibs
             # again through require_relative or a path is not inlined twice.
             @loaded[lib.id] = true
             @loaded[lib.url] = true
+            @resolver.inlined(lib) if @resolver.respond_to?(:inlined)
             body = expand(source(lib), lib.url)
             out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
             out << body.sub(/\n+$/, '')
@@ -601,6 +663,10 @@ module PicoRubyLibs
     def source(lib)
       urls = [lib.url] + lib.mirrors
       sri = integrity_of(lib)
+      if sri.nil? && @resolver.respond_to?(:integrity_required?) && @resolver.integrity_required?(lib.url)
+        raise Error, "#{lib.url} has no hash under \"integrity\" in the import map, but other files of its package do. " \
+                     "Every file of the package needs one, since the package.json that picks its files is not checked."
+      end
       unless @sources.key?(lib.url)
         text = nil
         urls.each do |url|

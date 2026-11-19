@@ -100,6 +100,37 @@ RSpec.describe PicoRubyLibs::Bundle do
       expect(new_lock.requires['greeter']['import']).to eq('npm:greeter@1')
     end
 
+    [
+      ["require 'greeter'", "require 'greeter/lib/greeter/version.rb'"],
+      ["require 'greeter/lib/greeter/version.rb'", "require 'greeter'"],
+    ].each do |requires|
+      it "keeps a new path inside a locked package on the locked release (#{requires.join(', then ')})" do
+        # A CDN whose unversioned greeter is 1.0.0 when the lockfile is
+        # written and 2.0.0 afterwards.
+        FileUtils.cp_r(npm_dir, copy)
+        FileUtils.cp_r(File.join(copy, 'greeter@1.0.0'), File.join(copy, 'greeter'))
+        copy_cdn = PicoRubyLibs::Bundle.file_url(copy) + '/'
+        File.write(importmap, JSON.generate('cdn' => copy_cdn, 'imports' => { 'greeter' => 'npm:greeter', 'shout' => 'npm:shout@2.0.0' }))
+        FileUtils.rm_f(lockfile)
+        expect(run('bundle', app, '--importmap', importmap)[0]).to eq(0)
+
+        v2 = File.join(copy, 'greeter@2.0.0')
+        FileUtils.cp_r(File.join(copy, 'greeter@1.0.0'), v2)
+        File.write(File.join(v2, 'package.json'), JSON.generate('name' => 'greeter', 'version' => '2.0.0', 'picoruby' => 'lib/greeter.rb'))
+        File.write(File.join(v2, 'lib', 'greeter', 'version.rb'), "module Greeter\n  VERSION = '2.0.0'\nend\n")
+        FileUtils.rm_rf(File.join(copy, 'greeter'))
+        FileUtils.cp_r(v2, File.join(copy, 'greeter'))
+
+        File.write(app, requires.join("\n") + "\nputs Greeter::VERSION\n")
+        status, out, err = run('bundle', app, '--importmap', importmap)
+        expect([status, err]).to eq([0, ''])
+        expect(out).to include("VERSION = '1.0.0'")
+        expect(out).not_to include("VERSION = '2.0.0'")
+        lock = JSON.parse(File.read(lockfile))
+        expect(lock['requires']['greeter/lib/greeter/version.rb']['url']).to eq("#{copy_cdn}greeter@1.0.0/lib/greeter/version.rb")
+      end
+    end
+
     it 'fails when a locked file changed' do
       FileUtils.cp_r(npm_dir, copy)
       lock = JSON.parse(File.read(lockfile))
@@ -219,6 +250,44 @@ RSpec.describe PicoRubyLibs::Bundle do
     status, _, err = run('bundle', app, '--importmap', importmap)
     expect(status).to eq(1)
     expect(err).to include('npm package not found: greeter@9.9.9', "from require 'greeter' at #{app}:1")
+  end
+
+  describe 'FileIO' do
+    let(:io) { PicoRubyLibs::Bundle::FileIO.new('file:///') }
+
+    it 'returns nil for an error response, so the next CDN is tried' do
+      allow(Net::HTTP).to receive(:get_response).and_return(Net::HTTPServiceUnavailable.new('1.1', '503', 'Service Unavailable'))
+      expect(io.fetch_text('https://down.test/npm/x/package.json')).to be_nil
+      expect(io.failures).to eq ['GET https://down.test/npm/x/package.json: 503 Service Unavailable']
+    end
+
+    it 'returns nil when the CDN cannot be reached' do
+      allow(Net::HTTP).to receive(:get_response).and_raise(Errno::ECONNREFUSED)
+      expect(io.fetch_text('https://down.test/npm/x/package.json')).to be_nil
+      expect(io.failures.first).to start_with('GET https://down.test/npm/x/package.json: ')
+    end
+  end
+
+  it 'falls back to a mirror for a file the first CDN lacks, and reuses the lockfile with --frozen' do
+    FileUtils.cp_r(npm_dir, copy)
+    first = File.join(File.dirname(copy), 'first')
+    FileUtils.mkdir_p(File.join(first, 'greeter@1.0.0'))
+    FileUtils.cp(File.join(npm_dir, 'greeter@1.0.0', 'package.json'), File.join(first, 'greeter@1.0.0'))
+    first_cdn = PicoRubyLibs::Bundle.file_url(first) + '/'
+    copy_cdn = PicoRubyLibs::Bundle.file_url(copy) + '/'
+    File.write(importmap, JSON.generate('cdn' => [first_cdn, copy_cdn],
+                                        'imports' => { 'greeter' => 'npm:greeter@1.0.0', 'shout' => 'npm:shout@2.0.0' }))
+
+    status, out, err = run('bundle', app, '--importmap', importmap)
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include('module Greeter')
+    lock = JSON.parse(File.read(lockfile))
+    expect(lock['requires']['greeter']['url']).to eq("#{first_cdn}greeter@1.0.0/lib/greeter.rb")
+    expect(lock['integrity']).to include("#{copy_cdn}greeter@1.0.0/lib/greeter.rb")
+
+    status, out, err = run('bundle', app, '--importmap', importmap, '--frozen')
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include('module Greeter')
   end
 
   it 'prints usage for an unknown command' do

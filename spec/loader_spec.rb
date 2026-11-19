@@ -36,6 +36,7 @@ RSpec.describe PicoRubyLibs do
 
       def absolute_url(path, base = nil)
         return URI.join(base, path).to_s if base
+        return path if path.match?(%r{^[a-z]+://})
         'https://site.test/game/' + path.sub(%r{^\./}, '')
       end
     end
@@ -303,6 +304,16 @@ RSpec.describe PicoRubyLibs do
         out = PicoRubyLibs::Expander.new(r).expand("require 'mylib'")
         expect(out.index('P = 1')).to be < out.index('M = P')
         expect(r.io.calls).to include("#{cdn}mylib@1.2.3/lib/part.rb", "#{mirror}mylib@1.2.3/lib/part.rb")
+      end
+
+      it 'gives a release reached through two ranges on different CDNs one base URL' do
+        files = {
+          "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+          "#{mirror}pkg@1.0/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+        }
+        r = resolver(files, cdn: [cdn, mirror], imports: { 'x' => 'npm:pkg@1/lib/x.rb', 'y' => 'npm:pkg@1.0/lib/x.rb' })
+        expect(r.resolve('x').url).to eq "#{cdn}pkg@1.0.0/lib/x.rb"
+        expect(r.resolve('y').url).to eq "#{cdn}pkg@1.0.0/lib/x.rb"
       end
 
       it 'accepts a single CDN given as a String' do
@@ -575,6 +586,28 @@ RSpec.describe PicoRubyLibs do
         described_class.new(resolver(files, integrity: hashes, **options)).expand("require 'a'")
       end
 
+      it 'refuses a file of a package whose other files have hashes, when it has none' do
+        # A changed package.json points the entry at another file.
+        changed = files.merge(package('a', '1.0.0', 'picoruby' => 'evil.rb'), "#{cdn}a@1.0.0/evil.rb" => 'EVIL = 1')
+        expect { expand(changed, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' }) }
+          .to raise_error(PicoRubyLibs::Error, %r{a@1.0.0/evil.rb has no hash .* other files of its package do})
+      end
+
+      it 'refuses a file of another release of a package whose files have hashes' do
+        changed = files.merge("#{cdn}a/package.json" => { 'name' => 'a', 'version' => '9.9.9', 'picoruby' => 'a.rb' },
+                              "#{cdn}a@9.9.9/a.rb" => 'EVIL = 1')
+        expect { expand(changed, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' }) }
+          .to raise_error(PicoRubyLibs::Error, /has no hash/)
+      end
+
+      it 'finds the hash of a URL mapping under the same file on another CDN' do
+        mirror = 'https://mirror.test/npm/'
+        r = resolver(files, cdn: [cdn, mirror], imports: { 'a' => "#{cdn}a@1.0.0/a.rb" },
+                            integrity: { "#{mirror}a@1.0.0/a.rb" => 'sha384-bad' })
+        expect { described_class.new(r).expand("require 'a'") }
+          .to raise_error(PicoRubyLibs::Error, /does not match its integrity sha384-bad/)
+      end
+
       it 'fetches a file with the hash the import map gives its URL' do
         expect(expand(files, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' })).to include('A = 1')
       end
@@ -612,6 +645,24 @@ RSpec.describe PicoRubyLibs do
       out = described_class.new(r).expand("require 'p1'\nrequire 'one'\nrequire 'two'")
       expect(out).to include('V = 1')
       expect(out).not_to include('V = 2')
+    end
+
+    it 'resolves an unversioned path to the release a nested require inlined' do
+      files = {
+        "#{cdn}wrapper/package.json" => { 'name' => 'wrapper', 'version' => '1.0.0', 'picoruby' => 'w.rb' },
+        "#{cdn}wrapper@1.0.0/w.rb" => "require 'one'",
+        "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@2/package.json" => { 'name' => 'pkg', 'version' => '2.0.0', 'picoruby' => 'lib/pkg.rb' },
+        "#{cdn}pkg@1.0.0/lib/pkg.rb" => 'V = 1',
+        "#{cdn}pkg@2.0.0/lib/pkg.rb" => 'V = 2',
+        "#{cdn}pkg@1.0.0/lib/helper.rb" => 'H = 1',
+        "#{cdn}pkg@2.0.0/lib/helper.rb" => 'H = 2',
+      }
+      r = resolver(files, imports: { 'wrapper' => 'npm:wrapper', 'one' => 'npm:pkg@1', 'two' => 'npm:pkg@2' })
+      out = described_class.new(r).expand_script("require 'wrapper'\nrequire 'two'\nrequire 'pkg/lib/helper.rb'")
+      expect(out).to include('V = 1', 'H = 1')
+      expect(out).not_to include('V = 2')
+      expect(out).not_to include('H = 2')
     end
 
     it 'treats a path to the entry file as the package, so another release is not inlined' do
