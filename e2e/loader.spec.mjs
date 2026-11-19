@@ -82,10 +82,12 @@ test('leaves built-in libraries to PicoRuby and starts every script', async ({ p
 });
 
 // Holds back the responses for `paths` until all of them have been requested,
-// so the page only gets them if it fetches them at the same time. Gives up
-// after a few seconds so a sequential loader fails the test instead of hanging.
+// so the page only gets them if it fetches them at the same time, and then
+// answers them in reverse order. Gives up after a few seconds so a sequential
+// loader fails the test instead of hanging.
 async function requireTogether(page, paths) {
   const requested = new Set();
+  const answered = [];
   let together = false;
   let gaveUp = false;
   let release;
@@ -95,7 +97,8 @@ async function requireTogether(page, paths) {
   await page.route(
     (url) => paths.includes(url.pathname),
     async (route) => {
-      requested.add(new URL(route.request().url()).pathname);
+      const path = new URL(route.request().url()).pathname;
+      requested.add(path);
       if (requested.size === paths.length) {
         // Together only if no response had to be let go before this one.
         together = !gaveUp;
@@ -103,20 +106,30 @@ async function requireTogether(page, paths) {
       }
       await Promise.race([allRequested, new Promise((resolve) => setTimeout(resolve, 3_000))]);
       if (requested.size < paths.length) gaveUp = true;
+      // The last path is answered first, the first one last.
+      await new Promise((resolve) => setTimeout(resolve, 300 * paths.indexOf(path)));
+      answered.push(path);
       return route.fallback();
     },
   );
-  return () => together;
+  return { together: () => together, answered };
 }
 
-test('fetches the src of every script, and the requires of a file, in parallel', async ({ page }) => {
+test('fetches the src of every script, and the requires of a file, in parallel, keeping document order', async ({ page }) => {
   let srcs;
   let libs;
   const run = await open(page, '/parallel.html', async () => {
-    srcs = await requireTogether(page, ['/parallel/one.rb', '/parallel/two.rb']);
-    libs = await requireTogether(page, ['/parallel/lib/a.rb', '/parallel/lib/b.rb']);
+    // Reversed, so the second script and the second require arrive first.
+    srcs = await requireTogether(page, ['/parallel/two.rb', '/parallel/one.rb']);
+    libs = await requireTogether(page, ['/parallel/lib/b.rb', '/parallel/lib/a.rb']);
   });
-  await waitForLogs(run, ['one: 3', 'two']);
-  expect(srcs()).toBe(true);
-  expect(libs()).toBe(true);
+  await waitForLogs(run, ['one: a,b', 'two']);
+  expect(srcs.together()).toBe(true);
+  expect(libs.together()).toBe(true);
+  expect(srcs.answered).toEqual(['/parallel/two.rb', '/parallel/one.rb']);
+  expect(libs.answered).toEqual(['/parallel/lib/b.rb', '/parallel/lib/a.rb']);
+  // Inlined and started in document order all the same: a before b, and
+  // the first script's task before the second's.
+  expect(run.logs).toEqual(['one: a,b', 'two']);
+  expect(run.errors).toEqual([]);
 });
