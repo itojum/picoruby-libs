@@ -95,6 +95,7 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.
+- Requires inside heredocs and `=begin`/`=end` comments are left alone, but other multi-line strings (`%q{...}`, `'...'` spanning lines) are not tracked: a line in them that reads as a whole `require` statement is expanded. Heredocs are found by a small heuristic lexer, not a Ruby parser, so unusual code (e.g. `x <<Y` where `x` is a local variable) can be misread.
 - Line numbers in error messages refer to the expanded script. Each library is wrapped in `# --- picoruby-libs: name (url) ---` comments.
 - The loader starts tasks through `picorb_create_task`, the same PicoRuby.wasm function `init.iife.js` uses. It is not a documented API, so a PicoRuby.wasm release could change it. Pin the runtime version for anything you publish.
 

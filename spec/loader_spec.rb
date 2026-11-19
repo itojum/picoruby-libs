@@ -61,6 +61,105 @@ RSpec.describe PicoRubyLibs do
       expect(found).to eq [[0, 'mylib'], [1, 'js'], [2, 'foo'], [8, './local']]
     end
 
+    it 'skips the bodies of heredocs' do
+      code = [
+        'HELP = <<~TXT',
+        "  require 'in_squiggly'",
+        'TXT',
+        "require 'a'",
+        "x = <<-'EOS'",
+        "require 'in_dash'",
+        '  EOS',
+        'y = <<RAW',
+        "require 'in_bare'",
+        '  RAW',
+        "require 'still_in_bare'",
+        'RAW',
+        "require 'b'",
+        'foo(<<~ONE, <<~"TWO")',
+        "  require 'in_one'",
+        'ONE',
+        "  require 'in_two'",
+        'TWO',
+        "require 'c'",
+      ].join("\n")
+
+      found = described_class.find_requires(code).map(&:name)
+      expect(found).to eq %w[a b c]
+    end
+
+    it 'does not take a shift, a string or a comment for a heredoc' do
+      code = [
+        'list <<item',
+        'class << self',
+        '# see <<~EOS',
+        'x = 1 # see <<~EOS',
+        'puts "<<~EOS"',
+        "puts 'a <<-EOS', `<<EOS`",
+        'n = 1 <<BITS',
+        'n = (m) <<BITS',
+        'n = m<<BITS',
+        "require 'a'",
+        'EOS',
+        'BITS',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'closes an indentable heredoc only on a terminator without trailing blanks' do
+      code = "h = <<~EOS\nEOS \nrequire 'literal'\n  EOS\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'steps over regexps and percent literals' do
+      code = [
+        'x = /<<~EOS/',
+        'y = %q{<<~EOS}',
+        'w = %w[<<~EOS a]',
+        'z = a / 2 + c / 3 <<X',
+        "require 'a'",
+        'puts %q{#}, <<~EOS',
+        "require 'in_heredoc'",
+        'EOS',
+        'q = n % m',
+        "require 'b'",
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq %w[a b]
+    end
+
+    it 'takes << after an identifier ending in a digit for a heredoc' do
+      code = "log2 <<~EOS\nrequire 'in_heredoc'\nEOS\nn = 2 <<X\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'reads quoted delimiters, interpolation, keywords and percent delimiters' do
+      code = [
+        "help = <<~'END-TEXT'", "require 'l1'", 'END-TEXT',
+        'text = "#{<<~EOS}"', "require 'l2'", 'EOS',
+        'puts "#{h["#"]}", <<~EOS', "require 'l3'", 'EOS',
+        'def help', 'return<<~EOS', "require 'l4'", 'EOS', 'end',
+        's = %$<<~EOS$',
+        't = %(#{<<~EOS})', "require 'l6'", 'EOS',
+        "u = %q(\#{<<~EOS})",
+        'puts %:#:, <<~EOS', "require 'l5'", 'EOS',
+        'x %= 2',
+        'class <<ENV',
+        "require 'real'",
+        'end',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'reads CRLF source' do
+      code = "h = <<~EOS\r\ntext\r\nEOS\r\nrequire 'real'\r\n"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'finds heredocs after a string or as a method argument' do
+      code = "puts 'x', <<~A\nrequire 'in_a'\nA\nputs <<B\nrequire 'in_b'\nB\nrequire 'c'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['c']
+    end
+
     it 'finds require_relative lines and marks them relative' do
       code = "require_relative 'a'\n  require_relative('../b.rb') # c\nrequire 'c'"
       found = described_class.find_requires(code).map { |r| [r.index, r.name, r.relative?] }
