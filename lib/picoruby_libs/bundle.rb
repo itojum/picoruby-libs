@@ -85,7 +85,7 @@ module PicoRubyLibs
     end
 
     # The lockfile as a Hash:
-    #   "requires":  { name => { "import" => import-map value or nil,
+    #   "requires":  { npm name => { "import" => import-map value or nil,
     #                            "id" => ..., "url" => ... } or
     #                          { "import" => ..., "library" => false } }
     #   "integrity": { url => "sha384-..." }
@@ -147,17 +147,23 @@ module PicoRubyLibs
 
       def resolve(name)
         import = @imports.key?(name) ? @imports[name] : nil
+        # Answered without npm: built-ins, names mapped to false, paths, and
+        # names mapped to a URL (resolved against the import map where it is
+        # now, so a moved checkout still works). Nothing to lock.
+        return @resolver.resolve(name) unless npm_lookup?(name, import)
+
         entry = @old.requires[name]
         if entry && entry['import'] == import
           @lock.requires[name] = entry
           return entry['library'] == false ? nil : Library.new(entry['id'], entry['url'])
         end
+        # Checked before resolving, so --frozen never asks npm.
+        if @frozen
+          why = entry ? 'its import-map value changed since the lockfile was written' : 'it is not in the lockfile'
+          raise Error, "cannot resolve #{name} with --frozen: #{why} (run without --frozen to update it)"
+        end
 
         lib = @resolver.resolve(name)
-        # Built-ins and names mapped to false never reach npm; nothing to lock.
-        return lib if lib.nil? && (BUILTINS.include?(name) || import == false || name.start_with?('.', '/'))
-        raise Error, "#{name} is not in the lockfile (run without --frozen to add it)" if @frozen
-
         @lock.requires[name] =
           if lib
             { 'import' => import, 'id' => lib.id, 'url' => lib.url }
@@ -171,16 +177,38 @@ module PicoRubyLibs
         @resolver.resolve_relative(name, base)
       end
 
+      # Called by IntegrityIO before fetching: with --frozen, a file outside
+      # the app's directory must already be in the lockfile.
+      def before_fetch(url)
+        return if local?(url) || !@frozen || @old.integrity.key?(url)
+        raise Error, "cannot fetch #{url} with --frozen: it is not in the lockfile (run without --frozen to add it)"
+      end
+
       # Called by IntegrityIO for every fetched file.
       def check(url, text)
-        return if url.start_with?(@local)
+        return if local?(url)
         actual = PicoRubyLibs::Bundle.integrity(text)
         expected = @old.integrity[url]
         if expected && expected != actual
           raise Error, "integrity mismatch for #{url}: the lockfile has #{expected}, the file is #{actual}"
         end
-        raise Error, "#{url} is not in the lockfile (run without --frozen to add it)" if @frozen && expected.nil?
         @lock.integrity[url] = actual
+      end
+
+      private
+
+      def local?(url)
+        url.start_with?(@local)
+      end
+
+      # Whether resolving `name` (mapped to `import`, nil when unmapped) may
+      # read a package.json from npm. Mirrors the order of Resolver#resolve.
+      def npm_lookup?(name, import)
+        if @imports.key?(name)
+          import.is_a?(String) && import.start_with?('npm:')
+        else
+          !(name.start_with?('.', '/') || BUILTINS.include?(name))
+        end
       end
     end
 
@@ -192,6 +220,7 @@ module PicoRubyLibs
       end
 
       def fetch_text(url)
+        @checker.before_fetch(url)
         text = @io.fetch_text(url)
         @checker.check(url, text) unless text.nil?
         text
@@ -282,7 +311,8 @@ module PicoRubyLibs
       else
         out.write(text)
       end
-      if lock_path && !options[:frozen] && (lock != Lock.read(lock_path) || !File.exist?(lock_path))
+      # --update rewrites the lockfile without reading it (it may be invalid).
+      if lock_path && !options[:frozen] && (options[:update] || !File.exist?(lock_path) || lock != Lock.read(lock_path))
         File.write(lock_path, lock.to_json)
       end
       0

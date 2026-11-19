@@ -113,21 +113,59 @@ RSpec.describe PicoRubyLibs::Bundle do
       expect(err).to include('integrity mismatch for', 'shout@2.0.0/shout.rb', "from require 'shout'")
     end
 
-    it 'with --frozen, fails on a require that is not locked and leaves the lockfile alone' do
+    it 'with --frozen, fails on an npm require that is not locked, without asking npm' do
       before_lock = File.read(lockfile)
       File.write(app, "require 'other'\n" + File.read(app))
-      write_importmap('greeter' => 'npm:greeter@1.0.0', 'shout' => 'npm:shout@2.0.0', 'other' => './other.rb')
-      File.write(File.join(dir, 'other.rb'), "module Other; end\n")
+      write_importmap('greeter' => 'npm:greeter@1.0.0', 'shout' => 'npm:shout@2.0.0', 'other' => 'npm:other@1')
+      lock = PicoRubyLibs::Bundle::Lock.read(lockfile)
+      expect {
+        PicoRubyLibs::Bundle.bundle(app, importmap: importmap, lock: lock, frozen: true, io: counting_io)
+      }.to raise_error(PicoRubyLibs::Error, /cannot resolve other with --frozen: it is not in the lockfile/)
+      expect(counting_io.json_calls).to be_nil
+
       status, _, err = run('bundle', app, '--importmap', importmap, '--frozen')
       expect(status).to eq(1)
-      expect(err).to include('other is not in the lockfile')
+      expect(err).to include('cannot resolve other with --frozen')
       expect(File.read(lockfile)).to eq(before_lock)
+    end
+
+    it 'with --frozen, fails on a changed import-map value without asking npm' do
+      write_importmap('greeter' => 'npm:greeter@2', 'shout' => 'npm:shout@2.0.0')
+      lock = PicoRubyLibs::Bundle::Lock.read(lockfile)
+      expect {
+        PicoRubyLibs::Bundle.bundle(app, importmap: importmap, lock: lock, frozen: true, io: counting_io)
+      }.to raise_error(PicoRubyLibs::Error, /greeter with --frozen: its import-map value changed/)
+      expect(counting_io.json_calls).to be_nil
+    end
+
+    it 'with --frozen, does not fetch a library file that has no integrity in the lockfile' do
+      data = JSON.parse(File.read(lockfile))
+      missing = "#{cdn}greeter@1.0.0/lib/greeter/version.rb"
+      data['integrity'].delete(missing)
+      File.write(lockfile, JSON.generate(data))
+      fetched = []
+      io = Class.new(PicoRubyLibs::Bundle::FileIO) do
+        define_method(:fetch_text) { |url| fetched << url; super(url) }
+      end.new(PicoRubyLibs::Bundle.file_url(importmap))
+      expect {
+        PicoRubyLibs::Bundle.bundle(app, importmap: importmap, lock: PicoRubyLibs::Bundle::Lock.read(lockfile),
+                                         frozen: true, io: io)
+      }.to raise_error(PicoRubyLibs::Error, /cannot fetch #{Regexp.escape(missing)} with --frozen/)
+      expect(fetched).not_to include(missing)
     end
 
     it 'with --frozen, succeeds when everything is locked' do
       status, out, = run('bundle', app, '--importmap', importmap, '--frozen')
       expect(status).to eq(0)
       expect(out).to include('module Greeter')
+    end
+
+    it 'with --update, replaces a lockfile it cannot read' do
+      File.write(lockfile, '{ not json')
+      status, out, err = run('bundle', app, '--importmap', importmap, '--update')
+      expect([status, err]).to eq([0, ''])
+      expect(out).to include('module Greeter')
+      expect(JSON.parse(File.read(lockfile))['requires'].keys).to eq(%w[greeter shout])
     end
 
     it 'with --update, resolves everything again' do
@@ -138,6 +176,27 @@ RSpec.describe PicoRubyLibs::Bundle do
       expect(status).to eq(0)
       expect(out).to include('module Greeter')
       expect(JSON.parse(File.read(lockfile))['requires']['greeter']['url']).to eq("#{cdn}greeter@1.0.0/lib/greeter.rb")
+    end
+  end
+
+  it 'resolves names mapped to a relative URL where the import map is now, and does not lock them' do
+    write_importmap('greeter' => 'npm:greeter@1.0.0', 'shout' => 'npm:shout@2.0.0', 'local' => './vendor/local.rb')
+    FileUtils.mkdir_p(File.join(dir, 'vendor'))
+    File.write(File.join(dir, 'vendor', 'local.rb'), "module Local; end\n")
+    File.write(app, "require 'local'\n" + File.read(app))
+    expect(run('bundle', app, '--importmap', importmap)[0]).to eq(0)
+    expect(JSON.parse(File.read(lockfile))['requires'].keys).to eq(%w[greeter shout])
+
+    # The same app in another directory (a moved checkout) with --frozen.
+    moved = Dir.mktmpdir('picoruby-libs-moved')
+    begin
+      FileUtils.cp_r(File.join(dir, '.'), moved)
+      FileUtils.rm_rf(dir)
+      status, out, err = run('bundle', File.join(moved, 'app.rb'), '--importmap', File.join(moved, 'importmap.json'), '--frozen')
+      expect([status, err]).to eq([0, ''])
+      expect(out).to include("(#{PicoRubyLibs::Bundle.file_url(moved)}/vendor/local.rb)")
+    ensure
+      FileUtils.rm_rf(moved)
     end
   end
 
