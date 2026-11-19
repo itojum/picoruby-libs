@@ -392,6 +392,21 @@ module PicoRubyLibs
       library(url, url)
     end
 
+    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
+    # The bundle CLI builds locked libraries with it.
+    def library(id, url)
+      cdn = @cdns.find { |c| url.start_with?(c) }
+      return Library.new(id, url) if cdn.nil?
+      path = url[cdn.length..-1]
+      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
+    end
+
+    # `url` and the same file on the other CDNs.
+    def same_files(url)
+      lib = library(url, url)
+      [lib.url] + lib.mirrors
+    end
+
     private
 
     def resolve_uncached(name)
@@ -450,13 +465,6 @@ module PicoRubyLibs
       library(url == entry_url ? pkg['name'] : url, url)
     end
 
-    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
-    def library(id, url)
-      cdn = @cdns.find { |c| url.start_with?(c) }
-      return Library.new(id, url) if cdn.nil?
-      path = url[cdn.length..-1]
-      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
-    end
 
     # [package name, version] of a file URL on the CDN, or nil.
     def npm_release(url)
@@ -475,7 +483,9 @@ module PicoRubyLibs
       @cdns.each do |cdn|
         pkg = @io.fetch_json("#{cdn}#{key}/package.json")
         next if pkg.nil?
-        @package_cdn["#{name}@#{pkg['version']}"] = cdn
+        # The first CDN chosen for a release stays, so two ranges that reach
+        # the same release give its files the same URLs.
+        @package_cdn["#{name}@#{pkg['version']}"] ||= cdn
         break
       end
       @packages[key] = pkg

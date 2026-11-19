@@ -252,6 +252,44 @@ RSpec.describe PicoRubyLibs::Bundle do
     expect(err).to include('npm package not found: greeter@9.9.9', "from require 'greeter' at #{app}:1")
   end
 
+  describe 'FileIO' do
+    let(:io) { PicoRubyLibs::Bundle::FileIO.new('file:///') }
+
+    it 'returns nil for an error response, so the next CDN is tried' do
+      allow(Net::HTTP).to receive(:get_response).and_return(Net::HTTPServiceUnavailable.new('1.1', '503', 'Service Unavailable'))
+      expect(io.fetch_text('https://down.test/npm/x/package.json')).to be_nil
+      expect(io.failures).to eq ['GET https://down.test/npm/x/package.json: 503 Service Unavailable']
+    end
+
+    it 'returns nil when the CDN cannot be reached' do
+      allow(Net::HTTP).to receive(:get_response).and_raise(Errno::ECONNREFUSED)
+      expect(io.fetch_text('https://down.test/npm/x/package.json')).to be_nil
+      expect(io.failures.first).to start_with('GET https://down.test/npm/x/package.json: ')
+    end
+  end
+
+  it 'falls back to a mirror for a file the first CDN lacks, and reuses the lockfile with --frozen' do
+    FileUtils.cp_r(npm_dir, copy)
+    first = File.join(File.dirname(copy), 'first')
+    FileUtils.mkdir_p(File.join(first, 'greeter@1.0.0'))
+    FileUtils.cp(File.join(npm_dir, 'greeter@1.0.0', 'package.json'), File.join(first, 'greeter@1.0.0'))
+    first_cdn = PicoRubyLibs::Bundle.file_url(first) + '/'
+    copy_cdn = PicoRubyLibs::Bundle.file_url(copy) + '/'
+    File.write(importmap, JSON.generate('cdn' => [first_cdn, copy_cdn],
+                                        'imports' => { 'greeter' => 'npm:greeter@1.0.0', 'shout' => 'npm:shout@2.0.0' }))
+
+    status, out, err = run('bundle', app, '--importmap', importmap)
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include('module Greeter')
+    lock = JSON.parse(File.read(lockfile))
+    expect(lock['requires']['greeter']['url']).to eq("#{first_cdn}greeter@1.0.0/lib/greeter.rb")
+    expect(lock['integrity']).to include("#{copy_cdn}greeter@1.0.0/lib/greeter.rb")
+
+    status, out, err = run('bundle', app, '--importmap', importmap, '--frozen')
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include('module Greeter')
+  end
+
   it 'prints usage for an unknown command' do
     status, _, err = run('build', app)
     expect(status).to eq(1)

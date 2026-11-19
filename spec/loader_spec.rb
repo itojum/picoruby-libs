@@ -302,6 +302,16 @@ RSpec.describe PicoRubyLibs do
         expect(r.io.calls).to include("#{cdn}mylib@1.2.3/lib/part.rb", "#{mirror}mylib@1.2.3/lib/part.rb")
       end
 
+      it 'gives a release reached through two ranges on different CDNs one base URL' do
+        files = {
+          "#{cdn}pkg@1/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+          "#{mirror}pkg@1.0/package.json" => { 'name' => 'pkg', 'version' => '1.0.0', 'picoruby' => 'lib/pkg.rb' },
+        }
+        r = resolver(files, cdn: [cdn, mirror], imports: { 'x' => 'npm:pkg@1/lib/x.rb', 'y' => 'npm:pkg@1.0/lib/x.rb' })
+        expect(r.resolve('x').url).to eq "#{cdn}pkg@1.0.0/lib/x.rb"
+        expect(r.resolve('y').url).to eq "#{cdn}pkg@1.0.0/lib/x.rb"
+      end
+
       it 'accepts a single CDN given as a String' do
         r = resolver(files, cdn: mirror)
         expect(r.resolve('mylib').mirrors).to eq []
