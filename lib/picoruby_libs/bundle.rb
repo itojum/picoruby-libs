@@ -13,6 +13,7 @@
 require 'digest'
 require 'json'
 require 'net/http'
+require 'openssl'
 require 'optparse'
 require 'uri'
 
@@ -34,6 +35,9 @@ module PicoRubyLibs
         @page = page
       end
 
+      # nil when the file is not there or the server cannot serve it (an
+      # error response, or a network failure), so the resolver tries the
+      # next CDN. The reasons are kept in `failures`.
       def fetch_text(url)
         uri = URI(url)
         case uri.scheme
@@ -41,10 +45,19 @@ module PicoRubyLibs
           path = URI.decode_uri_component(uri.path)  # keeps a literal "+"
           File.file?(path) ? File.read(path, encoding: 'UTF-8') : nil
         when 'http', 'https'
-          http_get(uri)
+          begin
+            http_get(uri)
+          rescue SystemCallError, IOError, SocketError, Timeout::Error, OpenSSL::SSL::SSLError => e
+            failures << "GET #{uri}: #{e.message}"
+            nil
+          end
         else
           raise Error, "cannot fetch #{url}"
         end
+      end
+
+      def failures
+        @failures ||= []
       end
 
       # The package.json fields the resolver reads, like BrowserIO#fetch_json.
@@ -77,7 +90,8 @@ module PicoRubyLibs
         when Net::HTTPNotFound
           nil
         else
-          raise Error, "GET #{uri}: #{res.code} #{res.message}"
+          failures << "GET #{uri}: #{res.code} #{res.message}"
+          nil
         end
       end
     end
@@ -163,7 +177,9 @@ module PicoRubyLibs
         entry = @old.requires[name]
         if entry && entry['import'] == import
           @lock.requires[name] = entry
-          return entry['library'] == false ? nil : Library.new(entry['id'], entry['url'])
+          # With the mirrors the current CDNs give it, so a reused entry can
+          # still fall back.
+          return entry['library'] == false ? nil : @resolver.library(entry['id'], entry['url'])
         end
         # Checked before resolving, so --frozen never asks npm.
         if @frozen
@@ -196,7 +212,7 @@ module PicoRubyLibs
       # Called by IntegrityIO before fetching: with --frozen, a file outside
       # the app's directory must already be in the lockfile.
       def before_fetch(url)
-        return if local?(url) || !@frozen || @old.integrity.key?(url)
+        return if local?(url) || !@frozen || locked_integrity(url)
         raise Error, "cannot fetch #{url} with --frozen: it is not in the lockfile (run without --frozen to add it)"
       end
 
@@ -204,7 +220,7 @@ module PicoRubyLibs
       def check(url, text)
         return if local?(url)
         actual = PicoRubyLibs::Bundle.integrity(text)
-        expected = @old.integrity[url]
+        expected = locked_integrity(url)
         if expected && expected != actual
           raise Error, "integrity mismatch for #{url}: the lockfile has #{expected}, the file is #{actual}"
         end
@@ -215,6 +231,13 @@ module PicoRubyLibs
 
       def local?(url)
         url.start_with?(@local)
+      end
+
+      # The locked hash of `url`, or of the same file on another CDN: a file
+      # fetched from a mirror is locked under the mirror's URL.
+      def locked_integrity(url)
+        same = @resolver.same_files(url).find { |u| @old.integrity.key?(u) }
+        same && @old.integrity[same]
       end
 
       # Whether resolving `name` (mapped to `import`, nil when unmapped) may

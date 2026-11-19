@@ -91,7 +91,15 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 | any other string | A URL, relative to the page. |
 | `false` | Leave this require to PicoRuby. |
 
-A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/npm/`).
+A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/npm/`). Give a list to fall back to other CDNs when one is down or blocked:
+
+```json
+{
+  "cdn": ["https://cdn.jsdelivr.net/npm/", "https://unpkg.com/"]
+}
+```
+
+Each package's `package.json` is taken from the first CDN that serves it, and its files come from that CDN, or from the next ones when a fetch fails. Every CDN in the list must serve npm packages as `<cdn><name>@<version>/<path>`, as jsDelivr and unpkg do. A name that is not on npm is looked up on every CDN in the list.
 
 ## Events
 

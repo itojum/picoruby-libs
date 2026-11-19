@@ -59,12 +59,15 @@ module PicoRubyLibs
     end
   end
 
+  # `mirrors` are the same file on the other CDNs, tried in order when `url`
+  # cannot be fetched.
   class Library
-    attr_reader :id, :url
+    attr_reader :id, :url, :mirrors
 
-    def initialize(id, url)
+    def initialize(id, url, mirrors = [])
       @id = id
       @url = url
+      @mirrors = mirrors
     end
 
     def ==(other)
@@ -326,8 +329,8 @@ module PicoRubyLibs
   # ---------------------------------------------------------------- resolving
 
   # Turns require names into Libraries. `io` does the network work:
-  #   io.fetch_text(url)    -> String, or nil when not found
-  #   io.fetch_json(url)    -> Hash, or nil when not found
+  #   io.fetch_text(url)    -> String, or nil when not found or unreachable
+  #   io.fetch_json(url)    -> Hash, or nil when not found or unreachable
   #   io.absolute_url(path, base = nil)
   #                         -> URL of `path` relative to `base`, or to the
   #                            page when `base` is nil
@@ -337,10 +340,13 @@ module PicoRubyLibs
     def initialize(io, imports: {}, cdn: nil, builtins: BUILTINS)
       @io = io
       @imports = imports
-      @cdn = cdn || DEFAULT_CDN
+      # `cdn` is one CDN or a list of them, tried in order.
+      @cdns = (cdn.is_a?(Array) ? cdn : [cdn || DEFAULT_CDN]).map { |c| c.end_with?('/') ? c : c + '/' }
+      @cdns = [DEFAULT_CDN] if @cdns.empty?
       @builtins = builtins
       @cache = {}
       @packages = {}
+      @package_cdn = {}
       @pinned = {}
       @inlined = {}
       @floating = {}
@@ -383,7 +389,22 @@ module PicoRubyLibs
       dot = last.rindex('.')
       path = dot && dot > 0 ? name : name + '.rb'
       url = @io.absolute_url(path, base)
-      Library.new(url, url)
+      library(url, url)
+    end
+
+    # A Library whose mirrors are `url` on the other CDNs, when it is on one.
+    # The bundle CLI builds locked libraries with it.
+    def library(id, url)
+      cdn = @cdns.find { |c| url.start_with?(c) }
+      return Library.new(id, url) if cdn.nil?
+      path = url[cdn.length..-1]
+      Library.new(id, url, (@cdns - [cdn]).map { |c| c + path })
+    end
+
+    # `url` and the same file on the other CDNs.
+    def same_files(url)
+      lib = library(url, url)
+      [lib.url] + lib.mirrors
     end
 
     private
@@ -435,19 +456,21 @@ module PicoRubyLibs
       @pinned[name] ||= pkg['version']
       # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
       # file look like two.
-      base = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
+      base = "#{@package_cdn["#{name}@#{pkg['version']}"]}#{pkg['name']}@#{pkg['version']}/"
       entry_url = entry && @io.absolute_url(entry.sub(/^\.?\//, ''), base)
-      return Library.new(pkg['name'], entry_url) if path.empty?
+      return library(pkg['name'], entry_url) if path.empty?
       url = @io.absolute_url(path, base)
       # A path to the entry file is the package itself, so it keeps another
       # release of the package from being inlined too.
-      Library.new(url == entry_url ? pkg['name'] : url, url)
+      library(url == entry_url ? pkg['name'] : url, url)
     end
+
 
     # [package name, version] of a file URL on the CDN, or nil.
     def npm_release(url)
-      return nil unless url.start_with?(@cdn)
-      PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(url[@cdn.length..-1])[0])
+      cdn = @cdns.find { |c| url.start_with?(c) }
+      return nil if cdn.nil?
+      PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(url[cdn.length..-1])[0])
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
@@ -456,7 +479,15 @@ module PicoRubyLibs
     def package_json(name, version)
       key = name + (version ? "@#{version}" : '')
       return @packages[key] if @packages.key?(key)
-      pkg = @io.fetch_json("#{@cdn}#{key}/package.json")
+      pkg = nil
+      @cdns.each do |cdn|
+        pkg = @io.fetch_json("#{cdn}#{key}/package.json")
+        next if pkg.nil?
+        # The first CDN chosen for a release stays, so two ranges that reach
+        # the same release give its files the same URLs.
+        @package_cdn["#{name}@#{pkg['version']}"] ||= cdn
+        break
+      end
       @packages[key] = pkg
       @packages["#{name}@#{pkg['version']}"] ||= pkg if pkg
       pkg
@@ -563,7 +594,7 @@ module PicoRubyLibs
             @loaded[lib.id] = true
             @loaded[lib.url] = true
             @resolver.inlined(lib) if @resolver.respond_to?(:inlined)
-            body = expand(source(lib.url), lib.url)
+            body = expand(source(lib), lib.url)
             out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
             out << body.sub(/\n+$/, '')
             out << "# --- end #{req.name} ---"
@@ -600,10 +631,19 @@ module PicoRubyLibs
       @resolver.io.prefetch(urls) unless urls.empty?
     end
 
-    def source(url)
-      @sources[url] = @resolver.io.fetch_text(url) unless @sources.key?(url)
-      text = @sources[url]
-      raise Error, "failed to load #{url}" if text.nil?
+    # The text of `lib`, from its URL or else from the first mirror that has
+    # it.
+    def source(lib)
+      unless @sources.key?(lib.url)
+        text = nil
+        ([lib.url] + lib.mirrors).each do |url|
+          text = @resolver.io.fetch_text(url)
+          break unless text.nil?
+        end
+        @sources[lib.url] = text
+      end
+      text = @sources[lib.url]
+      raise Error, "failed to load #{lib.url}" if text.nil?
       text
     end
   end
@@ -668,7 +708,7 @@ module PicoRubyLibs
           const fetches = window.__picoruby_libs_fetches || {};
           const pending = fetches[arg];
           delete fetches[arg];
-          return pending || fetch(arg).then(r => r.ok ? r.text() : null);
+          return pending || fetch(arg).then(r => r.ok ? r.text() : null).catch(() => null);
         })()
       JS
     end
@@ -682,6 +722,7 @@ module PicoRubyLibs
             name: p.name, version: p.version, main: p.main,
             picoruby: (p.picoruby && typeof p.picoruby === 'object') ? p.picoruby.main : p.picoruby
           })
+          .catch(() => null)
       JS
       return nil if pkg.nil?
       { 'name' => pkg[:name], 'version' => pkg[:version], 'main' => pkg[:main], 'picoruby' => pkg[:picoruby] }
@@ -691,12 +732,13 @@ module PicoRubyLibs
       eval_with({ 'arg' => path, 'base' => base }, 'new URL(arg, base || document.baseURI).href')
     end
 
-    # [imports Hash, cdn or nil] from every text/ruby-importmap script.
+    # [imports Hash, CDN list or nil] from every text/ruby-importmap script.
+    # "cdn" is a URL or a list of them.
     # Raises Error naming the script when one is not a JSON object.
     def import_map
       map = JS.eval(<<~JS)
         (() => {
-          const map = { imports: {}, cdn: null, error: null };
+          const map = { imports: {}, cdns: [], error: null };
           const els = document.querySelectorAll('#{IMPORT_MAP}');
           for (let i = 0; i < els.length; i++) {
             const el = els[i];
@@ -710,7 +752,7 @@ module PicoRubyLibs
               return { error: { index: String(i + 1), id: el.id, message: 'expected a JSON object' } };
             }
             Object.assign(map.imports, json.imports || {});
-            if (json.cdn) map.cdn = json.cdn;
+            if (json.cdn) map.cdns = [].concat(json.cdn).map(String);
           }
           map.entries = Object.entries(map.imports);
           return map;
@@ -722,7 +764,8 @@ module PicoRubyLibs
       end
       imports = {}
       map[:entries].to_a.each { |pair| imports[pair[0]] = pair[1] }
-      [imports, map[:cdn]]
+      cdns = map[:cdns].to_a.map { |c| c.to_s }
+      [imports, cdns.empty? ? nil : cdns]
     end
 
     # [[code, filename, URL or nil]] for each text/ruby-app script, in
