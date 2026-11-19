@@ -29,10 +29,15 @@ module PicoRubyLibs
   # Libraries compiled into PicoRuby.wasm. Their require is left for PicoRuby
   # without asking npm. Anything else is looked up on npm and left as it is
   # when no package declares itself a PicoRuby library, so this list only
-  # saves requests.
+  # saves requests. scripts/check-builtins.mjs compares it with the latest
+  # @picoruby/wasm-wasi (the "Builtins" workflow runs it weekly).
   BUILTINS = %w[
     js json time math base64 base16 yaml jwt machine sandbox picorubyvm
     funicular markdown drb sqlite3 indexeddb midibase task
+    uri env rng crc pack marshal mbedtls io io/console dir data eval
+    metaprog method objectspace binding sprintf compiler require mruby
+    error dfu array-ext hash-ext kernel-ext numeric-ext object-ext
+    proc-ext string-ext toplevel-ext
   ]
 
   # `require 'x'` / `require('x')` / `require "x"` (or `require_relative`) as
@@ -309,6 +314,19 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # The file name PicoRuby reports in errors for the `n`th (1-based)
+  # text/ruby-app script on the page: the last segment of the `src` URL's
+  # path, without query or fragment, or `inline-n.rb` for an inline script.
+  def self.script_filename(src, n)
+    path = src.split('#').first.to_s.split('?').first.to_s
+    name = path[-1] == '/' ? '' : path.split('/').last.to_s
+    if name.empty?
+      src.empty? ? "inline-#{n}.rb" : "script-#{n}.rb"
+    else
+      name
+    end
+  end
+
   # The message for the `index`th (1-based, Integer or String) text/ruby-importmap script that
   # failed to parse. `id` is the script's id attribute ('' when it has none).
   def self.import_map_error(index, id, message)
@@ -403,7 +421,7 @@ module PicoRubyLibs
       [imports, map[:cdn]]
     end
 
-    # [[code, filename or nil, URL or nil]] for each text/ruby-app script, in
+    # [[code, filename, URL or nil]] for each text/ruby-app script, in
     # order. The URL (the `src`, made absolute by the DOM) is the base of the
     # script's require_relative. The code is nil when the src cannot be
     # fetched.
@@ -414,8 +432,9 @@ module PicoRubyLibs
       scripts = []
       elements.each_with_index do |el, i|
         src = srcs[i]
+        name = PicoRubyLibs.script_filename(src, i + 1)
         if src.empty?
-          scripts << [el[:textContent].to_s, nil, nil]
+          scripts << [el[:textContent].to_s, name, nil]
         else
           # A rejected fetch (network or CORS error) raises at the await.
           # Return nil so only this script is skipped.
@@ -424,7 +443,7 @@ module PicoRubyLibs
           rescue => e
             nil
           end
-          scripts << [code, src.split('/').last, src]
+          scripts << [code, name, src]
         end
       end
       scripts
