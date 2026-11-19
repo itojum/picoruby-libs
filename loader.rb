@@ -79,7 +79,7 @@ module PicoRubyLibs
   # A call of require / require_relative with a string literal anywhere in a
   # line, for finding the ones REQUIRE_LINE does not take (`require 'a' if x`,
   # `require 'a'; require 'b'`).
-  REQUIRE_CALL = /(^|[^A-Za-z0-9_.:@$])require(_relative)?[ \t]*\(?[ \t]*['"]([^'"]+)['"]/
+  REQUIRE_CALL = /(^|[^A-Za-z0-9_.:@$])require(_relative)?[ \t]*\(?[ \t]*(['"])([^'"]*)\3/
 
   # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
   # `<<ID`, with the identifier optionally quoted.
@@ -109,13 +109,14 @@ module PicoRubyLibs
       while (m = rest.match(REQUIRE_CALL))
         at = offset + rest.index(m[0])
         word = at + m[1].length
-        if code_at[word] && !receiver_before?(line, word)
-          found << [i, m[3], m[2] == '_relative']
-          offset = at + m[0].length
-        else
-          # The match may run into a real call (`"require "; require 'x'`).
-          offset = word + 1
+        name = m[4]
+        # A name with #{...} is not a literal one: leave it alone.
+        if code_at[word] && !receiver_before?(line, word) && !name.empty? && !name.include?('#{')
+          found << [i, name, m[2] == '_relative']
         end
+        # Go on from just past `require`: a match may run into a real call
+        # (`"require "; require 'x'`) or hold one (`"#{require 'x'}"`).
+        offset = word + 1
         rest = line[offset..-1]
       end
     end
@@ -123,11 +124,13 @@ module PicoRubyLibs
   end
 
   # Whether the word at `word` in `line` is a method call on a receiver
-  # (`obj.require`, `obj. require`, `Mod::require`).
+  # (`obj.require`, `obj. require`, `Mod::require`). A single `:` is not
+  # one (`{ key: require 'x' }`, `a ? b : require 'x'`).
   def self.receiver_before?(line, word)
     i = word - 1
     i -= 1 while i >= 0 && (line[i] == ' ' || line[i] == "\t")
-    i >= 0 && (line[i] == '.' || line[i] == ':')
+    return false if i < 0
+    line[i] == '.' || (line[i] == ':' && i > 0 && line[i - 1] == ':')
   end
 
   # [true/false, ...] for each character of `line`: whether it is code, not
