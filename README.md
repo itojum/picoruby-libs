@@ -34,6 +34,7 @@ Rules:
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it.
 - A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
+- If a script cannot be expanded (a library or its `src` cannot be fetched, for example), that script is not started and the error goes to the browser console with each `require` that led to it, as `from require 'name' at file:line`. The other scripts still start.
 
 ## require_relative
 

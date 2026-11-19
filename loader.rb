@@ -390,7 +390,26 @@ module PicoRubyLibs
       out
     end
 
-    def expand(code, base = nil)
+    # Expands one text/ruby-app script and yields the result (to start it).
+    # When expanding or the block fails, the libraries it had marked as loaded
+    # are forgotten, so a later script inlines them itself. `where` names the
+    # script in error messages.
+    def expand_script(code, base = nil, where = nil)
+      saved = @loaded.dup
+      begin
+        out = expand(code, base, where)
+        yield out if block_given?
+        out
+      rescue => e
+        @loaded = saved
+        raise e
+      end
+    end
+
+    # A failed require raises an Error whose message ends with a
+    # "from require 'name' at file:line" line for each require that led to it.
+    def expand(code, base = nil, where = nil)
+      where ||= base || 'script'
       # The file being expanded counts as loaded, so a circular
       # require_relative back to it (e.g. from a script's own src) is dropped.
       @loaded[base] = true if base
@@ -404,19 +423,24 @@ module PicoRubyLibs
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
-        lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
-        if lib.nil?
-          out << line
-        elsif @loaded[lib.id]
-          out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
-        else
-          # Marked before expanding its body, so a circular require is
-          # dropped like Ruby's require does for a file that is loading.
-          @loaded[lib.id] = true
-          body = expand(source(lib.url), lib.url)
-          out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
-          out << body.sub(/\n+$/, '')
-          out << "# --- end #{req.name} ---"
+        begin
+          lib = req.relative? ? @resolver.resolve_relative(req.name, base) : @resolver.resolve(req.name)
+          if lib.nil?
+            out << line
+          elsif @loaded[lib.id]
+            out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
+          else
+            # Marked before expanding its body, so a circular require is
+            # dropped like Ruby's require does for a file that is loading.
+            @loaded[lib.id] = true
+            body = expand(source(lib.url), lib.url)
+            out << "# --- picoruby-libs: #{req.name} (#{lib.url}) ---"
+            out << body.sub(/\n+$/, '')
+            out << "# --- end #{req.name} ---"
+          end
+        rescue => e
+          kind = req.relative? ? 'require_relative' : 'require'
+          raise Error, "#{e.message}\n  from #{kind} '#{req.name}' at #{where}:#{req.index + 1}"
         end
       end
       out.concat(lines[nxt..-1] || [])
@@ -526,7 +550,8 @@ module PicoRubyLibs
 
     # [[code, filename, URL or nil]] for each text/ruby-app script, in
     # order. The URL (the `src`, made absolute by the DOM) is the base of the
-    # script's require_relative.
+    # script's require_relative. The code is nil when the src cannot be
+    # fetched.
     def app_scripts
       n = 0
       JS.document.querySelectorAll(APP_SCRIPT).to_a.map do |el|
@@ -536,8 +561,13 @@ module PicoRubyLibs
         if src.empty?
           [el[:textContent].to_s, name, nil]
         else
-          code = fetch_text(src)
-          raise Error, "failed to load #{src}" if code.nil?
+          # A rejected fetch (network or CORS error) raises at the await.
+          # Return nil so only this script is skipped.
+          code = begin
+            fetch_text(src)
+          rescue => e
+            nil
+          end
           [code, name, src]
         end
       end
@@ -555,14 +585,35 @@ module PicoRubyLibs
           : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [window.__picoruby_libs_arg])
       JS
     end
+
+    def report_error(message)
+      JS.global[:__picoruby_libs_arg] = message
+      JS.eval('console.error(window.__picoruby_libs_arg)')
+    end
   end
 
+  # Expands and starts each text/ruby-app script in document order. A script
+  # that fails to expand is reported with io.report_error and skipped; the
+  # others still start.
   def self.boot(io = BrowserIO.new)
-    imports, cdn = io.import_map
-    scripts = io.app_scripts
-    expanded = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
-                       .expand_all(scripts.map { |s| s[0] }, scripts.map { |s| s[2] })
-    expanded.each_with_index { |code, i| io.create_task(code, scripts[i][1]) }
+    begin
+      imports, cdn = io.import_map
+      scripts = io.app_scripts
+    rescue => e
+      io.report_error("picoruby-libs: no script was started: #{e.message}")
+      return
+    end
+    expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
+    scripts.each_with_index do |script, i|
+      code, filename, url = script
+      label = "script ##{i + 1}" + (filename ? " (#{filename})" : '')
+      begin
+        raise Error, "failed to load #{url}" if code.nil?
+        expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
+      rescue => e
+        io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
+      end
+    end
   end
 end
 
