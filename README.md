@@ -121,6 +121,13 @@ npm run check:builtins -- --version head       # or any version / dist-tag
 
 When it fails, it prints the names to add to or remove from `BUILTINS`.
 
+The E2E tests in `e2e/` run `loader.rb` on real PicoRuby.wasm in headless Chromium, with libraries served from a fake npm CDN (`e2e/fixtures/npm/`). They use the pinned `@picoruby/wasm-wasi` version in `e2e/server.mjs` unless `PICORUBY_WASM_VERSION` is set; CI runs both the pinned version and `latest`.
+
+```bash
+npm run test:e2e                                  # pinned PicoRuby.wasm
+PICORUBY_WASM_VERSION=latest npm run test:e2e     # latest
+```
+
 ## Releasing
 
 The version is the `version` in `package.json`. Publishing a GitHub Release whose tag is that version publishes the package to npm.
