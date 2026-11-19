@@ -7,17 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- A `require` / `require_relative` the loader does not expand because it is not a whole statement on its own line (`require 'a' if x`, `require 'a'; require 'b'`) now prints a warning with the file and line in the browser console, when it names a library or a file. Built-ins and npm packages that are not PicoRuby libraries are not reported. ([#19](https://github.com/itojum/picoruby-libs/issues/19))
-
-### Changed
-
-- An indented `require` / `require_relative` of a library (one the loader would inline, not a built-in) now raises `PicoRubyLibs::Error` naming the file and line, instead of inlining the library inside a `def` (a SyntaxError) or a `class` (another namespace). Move it to the top level. A script indented as a whole (as inline scripts usually are) is measured from its least indented line. ([#15](https://github.com/itojum/picoruby-libs/issues/15))
-
 ### Fixed
 
-- A `require` line inside a heredoc (`<<~ID`, `<<-ID`, `<<ID`, quoted or not) is no longer expanded. Other multi-line strings are still not tracked; see Limitations in the README. ([#14](https://github.com/itojum/picoruby-libs/issues/14))
 - A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
 
 ## [0.2.0] - 2026-11-19
