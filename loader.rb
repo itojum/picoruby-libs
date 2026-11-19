@@ -371,10 +371,13 @@ module PicoRubyLibs
 
   # ---------------------------------------------------------------- expanding
 
-  # Rewrites the scripts in order. Each library is inlined once, at its first
-  # require in document order; later requires of it are dropped. Requires
-  # inside a library are expanded the same way, so a library can depend on
-  # another one by requiring it.
+  # Rewrites the scripts. Each script gets its own copy of every library it
+  # requires, inlined at its first require in that script; later requires of
+  # it in the same script are dropped. Scripts run as separate tasks that can
+  # interleave at an `await`, so a library inlined only into an earlier script
+  # might not be defined yet when a later one uses it. Requires inside a
+  # library are expanded the same way, so a library can depend on another one
+  # by requiring it. Fetched files are cached, so each is fetched once.
   class Expander
     def initialize(resolver)
       @resolver = resolver
@@ -386,24 +389,18 @@ module PicoRubyLibs
     # (nil for a script written in the page).
     def expand_all(codes, bases = [])
       out = []
-      codes.each_with_index { |code, i| out << expand(code, bases[i]) }
+      codes.each_with_index { |code, i| out << expand_script(code, bases[i]) }
       out
     end
 
-    # Expands one text/ruby-app script and yields the result (to start it).
-    # When expanding or the block fails, the libraries it had marked as loaded
-    # are forgotten, so a later script inlines them itself. `where` names the
-    # script in error messages.
+    # Expands one text/ruby-app script, inlining every library it requires
+    # whether or not an earlier script has it too, and yields the result (to
+    # start it). `where` names the script in error messages.
     def expand_script(code, base = nil, where = nil)
-      saved = @loaded.dup
-      begin
-        out = expand(code, base, where)
-        yield out if block_given?
-        out
-      rescue => e
-        @loaded = saved
-        raise e
-      end
+      @loaded = {}
+      out = expand(code, base, where)
+      yield out if block_given?
+      out
     end
 
     # A failed require raises an Error whose message ends with a
