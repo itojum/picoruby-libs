@@ -108,17 +108,32 @@ module PicoRubyLibs
       offset = 0
       while (m = rest.match(REQUIRE_CALL))
         at = offset + rest.index(m[0])
-        found << [i, m[3], m[2] == '_relative'] if code_at[at + m[1].length]
-        offset = at + m[0].length
+        word = at + m[1].length
+        if code_at[word] && !receiver_before?(line, word)
+          found << [i, m[3], m[2] == '_relative']
+          offset = at + m[0].length
+        else
+          # The match may run into a real call (`"require "; require 'x'`).
+          offset = word + 1
+        end
         rest = line[offset..-1]
       end
     end
     found
   end
 
+  # Whether the word at `word` in `line` is a method call on a receiver
+  # (`obj.require`, `obj. require`, `Mod::require`).
+  def self.receiver_before?(line, word)
+    i = word - 1
+    i -= 1 while i >= 0 && (line[i] == ' ' || line[i] == "\t")
+    i >= 0 && (line[i] == '.' || line[i] == ':')
+  end
+
   # [true/false, ...] for each character of `line`: whether it is code, not
   # inside a literal (string, regexp, percent literal, character literal)
-  # or a comment. Uses the heredoc scan's lexer.
+  # or a comment. Code in #{...} counts as code. Uses the heredoc scan's
+  # lexer.
   def self.code_mask(line)
     spans = []
     scan_code(line, 0, [], false, spans)
@@ -220,18 +235,22 @@ module PicoRubyLibs
         spans << [pos, line.length] if spans
         return nil
       elsif c == '"' || c == '`'
-        after = literal_end(line, pos + 1, c, nil, starts, true)
+        after = literal_end(line, pos + 1, c, nil, starts, true, spans)
+        literal = false # recorded by literal_end
       elsif c == "'"
-        after = literal_end(line, pos + 1, c, nil, starts, false)
+        after = literal_end(line, pos + 1, c, nil, starts, false, spans)
+        literal = false
       elsif c == '?' && kind == :op && char_literal_end(line, pos)
         after = char_literal_end(line, pos) # ?# / ?" / ?\n
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
-        after = literal_end(line, pos + 1, '/', nil, starts, true)
+        after = literal_end(line, pos + 1, '/', nil, starts, true, spans)
+        literal = false
       elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
         open = m[0][-1]
         close = PAIRS[open]
         after = literal_end(line, pos + m[0].length, close || open, close ? open : nil,
-                            starts, !%w[q w i s].include?(m[1]))
+                            starts, !%w[q w i s].include?(m[1]), spans, pos)
+        literal = false
       elsif c == '<' && line[pos + 1] == '<'
         m = line[pos..-1].match(HEREDOC_START)
         quoted = !m.nil? && !m[2].to_s.empty?
@@ -322,9 +341,12 @@ module PicoRubyLibs
   # The index after the `close` that ends a literal whose body starts at
   # `from`, or nil when it does not end on this line. `open` (for bracket
   # delimiters) nests. With `interp`, the code in #{...} is scanned for
-  # heredocs, so quotes inside it do not end the literal.
-  def self.literal_end(line, from, close, open, starts, interp)
+  # heredocs, so quotes inside it do not end the literal. `spans` (when
+  # given) gets [from, to] for the literal's text from `start`, leaving the
+  # code in #{...} out.
+  def self.literal_end(line, from, close, open, starts, interp, spans = nil, start = from - 1)
     depth = 0
+    seg = start # where the literal text being recorded in `spans` starts
     i = from
     while i < line.length
       c = line[i]
@@ -333,20 +355,27 @@ module PicoRubyLibs
         next
       end
       if interp && c == '#' && line[i + 1] == '{'
-        i = scan_code(line, i + 2, starts, true)
+        spans << [seg, i + 2] if spans
+        i = scan_code(line, i + 2, starts, true, spans)
         return nil if i.nil?
+        seg = i - 1
         next
       end
       if c == close
-        return i + 1 if depth == 0
+        if depth == 0
+          spans << [seg, i + 1] if spans
+          return i + 1
+        end
         depth -= 1
       elsif open && c == open
         depth += 1
       end
       i += 1
     end
+    spans << [seg, line.length] if spans
     nil
   end
+
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]
   def self.parse_spec(spec)

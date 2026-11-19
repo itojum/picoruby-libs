@@ -193,9 +193,12 @@ RSpec.describe PicoRubyLibs do
         "puts 'a\\'b require 'l' if z'",
         "puts %q{require_relative 'm'}, /require 'n'/",
         "/#/; require_relative 'o'",
+        "puts \"require \"; require_relative \"p\"",
+        "obj. require 'q'; Mod::require 'r'",
+        "puts \"loaded: \#{require_relative 's'} 'x'\"",
       ].join("\n")
       expect(described_class.find_other_requires(code)).to eq [
-        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true],
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true], [16, 'p', true], [18, 's', true],
       ]
     end
   end
