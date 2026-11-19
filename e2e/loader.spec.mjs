@@ -3,7 +3,8 @@ import { CDN, PICORUBY_WASM, PICORUBY_WASM_VERSION, SITE, serve } from './server
 
 // Opens `path` and collects what PicoRuby prints. Ruby's `puts` goes to
 // console.log; the fixtures prefix the lines the tests look at with "E2E ".
-async function open(page, path) {
+// `setup` runs after the fixtures are routed and before the page loads.
+async function open(page, path, setup = async () => {}) {
   const logs = [];
   const errors = [];
   const requests = [];
@@ -14,6 +15,7 @@ async function open(page, path) {
   page.on('pageerror', (err) => errors.push(err.message));
   page.on('request', (req) => requests.push(req.url()));
   await serve(page);
+  await setup();
   await page.goto(SITE + path);
   return { logs, errors, requests };
 }
@@ -77,4 +79,69 @@ test('leaves built-in libraries to PicoRuby and starts every script', async ({ p
   expect(run.errors).toEqual([]);
   // js and json are in BUILTINS, so they are not looked up anywhere.
   expect(run.requests.filter((url) => /\/(js|json)(@|\/package\.json)/.test(url))).toEqual([]);
+});
+
+test('skips and reports scripts that cannot be fetched or compiled, and starts the others', async ({ page }) => {
+  const run = await open(page, '/failures.html');
+  await waitForLogs(run, ['healthy script']);
+  await expect.poll(() => page.evaluate(() => window.e2eEvents.length), { timeout: 30_000 }).toBe(3);
+  const events = await page.evaluate(() => window.e2eEvents);
+  expect(events.map((e) => e[0])).toEqual(['error', 'error', 'ready']);
+  expect(events[0][1]).toContain('script #1 (missing.rb) was not started: failed to load');
+  expect(events[1][1]).toContain('script #2 (inline-2.rb) was not started: PicoRuby could not compile');
+  // Each failure also goes to console.error.
+  expect(run.errors.filter((text) => text.startsWith('picoruby-libs: '))).toEqual(events.slice(0, 2).map((e) => e[1]));
+});
+
+// Holds back the responses for `paths` until all of them have been requested,
+// so the page only gets them if it fetches them at the same time, and then
+// answers them in reverse order. Gives up after a few seconds so a sequential
+// loader fails the test instead of hanging.
+async function requireTogether(page, paths) {
+  const requested = new Set();
+  const answered = [];
+  let together = false;
+  let gaveUp = false;
+  let release;
+  const allRequested = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    (url) => paths.includes(url.pathname),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      requested.add(path);
+      if (requested.size === paths.length) {
+        // Together only if no response had to be let go before this one.
+        together = !gaveUp;
+        release();
+      }
+      await Promise.race([allRequested, new Promise((resolve) => setTimeout(resolve, 3_000))]);
+      if (requested.size < paths.length) gaveUp = true;
+      // The last path is answered first, the first one last.
+      await new Promise((resolve) => setTimeout(resolve, 300 * paths.indexOf(path)));
+      answered.push(path);
+      return route.fallback();
+    },
+  );
+  return { together: () => together, answered };
+}
+
+test('fetches the src of every script, and the requires of a file, in parallel, keeping document order', async ({ page }) => {
+  let srcs;
+  let libs;
+  const run = await open(page, '/parallel.html', async () => {
+    // Reversed, so the second script and the second require arrive first.
+    srcs = await requireTogether(page, ['/parallel/two.rb', '/parallel/one.rb']);
+    libs = await requireTogether(page, ['/parallel/lib/b.rb', '/parallel/lib/a.rb']);
+  });
+  await waitForLogs(run, ['one: a,b', 'two']);
+  expect(srcs.together()).toBe(true);
+  expect(libs.together()).toBe(true);
+  expect(srcs.answered).toEqual(['/parallel/two.rb', '/parallel/one.rb']);
+  expect(libs.answered).toEqual(['/parallel/lib/b.rb', '/parallel/lib/a.rb']);
+  // Inlined and started in document order all the same: a before b, and
+  // the first script's task before the second's.
+  expect(run.logs).toEqual(['one: a,b', 'two']);
+  expect(run.errors).toEqual([]);
 });
