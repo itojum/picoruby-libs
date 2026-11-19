@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>require_relative and URL imports</title></head>
+<body>
+  <script type="text/ruby-importmap">
+    { "imports": { "local": "./vendor/local.rb" } }
+  </script>
+  <script type="text/ruby" src="/loader.rb"></script>
+  <script type="text/ruby-app" src="app/game.rb"></script>
+
+  <script src="{{PICORUBY_WASM}}/init.iife.js"></script>
+</body>
+</html>

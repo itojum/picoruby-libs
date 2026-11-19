@@ -30,10 +30,11 @@ So the loader resolves requires before your code starts:
 
 Rules:
 
-- Each library is inlined once, at its first `require` in document order. Later requires of it are dropped, and so is a circular one, as in Ruby.
+- Each script gets its own copy of each library it requires, inlined at its first `require` in that script. Later requires of it in the same script are dropped, and so is a circular one, as in Ruby. Scripts run as separate tasks that can interleave at an `await`, so a script never relies on another script having loaded a library first. A library required by several scripts therefore runs its top-level code once per script; its files are fetched once.
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it.
 - A name that is not a PicoRuby library is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. Known built-ins are not looked up on npm at all.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
+- If a script cannot be expanded (a library or its `src` cannot be fetched, for example), that script is not started and the error goes to the browser console with each `require` that led to it, as `from require 'name' at file:line`. The other scripts still start.
 
 ## require_relative
 
@@ -46,7 +47,7 @@ require_relative 'lib/player'   # fetches lib/player.rb next to game.rb
 
 - The path is resolved against the URL of the file that contains the line: the `src` of a `text/ruby-app` script, the URL of a library file, or the page for a script written in the page.
 - `.rb` is added when the name has no extension.
-- Each file is inlined once, at its first require, as with `require`. A file that cannot be fetched is an error.
+- Each file is inlined once per script, at its first require, as with `require`. A file that cannot be fetched is an error.
 - It works inside libraries too, so a library can be published as several files and `require_relative` them from its entry file.
 
 ## Publishing a library
@@ -92,6 +93,22 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 
 A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/npm/`).
 
+## Events
+
+The loader dispatches events on `document` so JavaScript on the page can tell when it is done:
+
+- `picoruby-libs:error` for each script that was not started (and once if the page's scripts or import map could not be read). `event.detail` is the error message, the same text sent to `console.error`.
+- `picoruby-libs:ready` once, after every script has been started as a task or skipped. It comes after any `picoruby-libs:error` events. The tasks have been created, not finished.
+
+```html
+<script>
+  document.addEventListener('picoruby-libs:error', e => showError(e.detail));
+  document.addEventListener('picoruby-libs:ready', () => hideSpinner());
+</script>
+```
+
+Add the listeners before `init.iife.js` runs, so none is missed.
+
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. Others (`require 'a' if x`, `require 'a'; require 'b'`) are left for PicoRuby, which raises `LoadError` since its file system is empty. When such a require names a library (or is a `require_relative`), the loader prints a warning with the file and line in the browser console.
@@ -108,6 +125,24 @@ A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/n
 bundle install
 bundle exec rspec          # or: npm test
 npm run serve              # serves examples/ at http://localhost:3000/examples/
+```
+
+`BUILTINS` in `loader.rb` lists the libraries compiled into PicoRuby.wasm, which the loader never looks up on npm. The **Builtins** workflow checks it every week against the latest `@picoruby/wasm-wasi`, by running PicoRuby.wasm in headless Chromium and asking it which require names are built in. To run the check locally (needs Node.js and Ruby):
+
+```bash
+npm install
+npx playwright install chromium
+npm run check:builtins                         # against @picoruby/wasm-wasi@latest
+npm run check:builtins -- --version head       # or any version / dist-tag
+```
+
+When it fails, it prints the names to add to or remove from `BUILTINS`.
+
+The E2E tests in `e2e/` run `loader.rb` on real PicoRuby.wasm in headless Chromium, with libraries served from a fake npm CDN (`e2e/fixtures/npm/`). They use the pinned `@picoruby/wasm-wasi` version in `e2e/server.mjs` unless `PICORUBY_WASM_VERSION` is set; CI runs both the pinned version and `latest`.
+
+```bash
+npm run test:e2e                                  # pinned PicoRuby.wasm
+PICORUBY_WASM_VERSION=latest npm run test:e2e     # latest
 ```
 
 ## Releasing
