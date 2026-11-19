@@ -7,26 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking
-
-- **npm resolution is opt-in.** The loader loads from npm only the names that `"imports"` in a `text/ruby-importmap` maps to npm (`"mylib": "npm:mylib@1.2.3"`), and files inside those packages (`require 'mylib/lib/x.rb'`). Any other name is left to PicoRuby, as a name that is not on npm was before. This stops a package published under the name of a gem missing from the built-in list from running on the page (dependency confusion). When an unmapped name is a PicoRuby library on npm, the loader prints the line to add to the import map with `console.warn`. ([#16](https://github.com/itojum/picoruby-libs/issues/16))
-
-  **Migrating:** for every npm library the page requires, including the libraries those require, add `"name": "npm:name@version"` to `"imports"` in a `text/ruby-importmap` script. See "Migrating from 0.2.0" in the README.
-
-### Added
-
-- `"integrity"` in `text/ruby-importmap` maps library file URLs to Subresource Integrity hashes (`"sha384-..."`). The loader passes the hash to `fetch`, and a file that does not match raises `PicoRubyLibs::Error`. ([#18](https://github.com/itojum/picoruby-libs/issues/18))
-- `"cdn"` in `text/ruby-importmap` accepts a list of CDNs, such as `["https://cdn.jsdelivr.net/npm/", "https://unpkg.com/"]`. `package.json` is taken from the first CDN that serves it, and a file that cannot be fetched from one CDN is fetched from the next. A fetch that fails on the network (a CDN that is down or blocked) now counts as not found instead of raising. ([#30](https://github.com/itojum/picoruby-libs/issues/30))
-
-### Changed
-
-- README: the examples pin exact versions instead of `@latest`, and show an `integrity` attribute on the PicoRuby.wasm script. ([#18](https://github.com/itojum/picoruby-libs/issues/18))
-
 ### Fixed
 
 - A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
-- A file inside an npm package (`require 'pkg/lib/x.rb'`, or `"npm:pkg@1/lib/x.rb"` in the import map) is now pinned to the version `package.json` reports, like the package entry. A package or path without a version uses the release already pinned for the package (by its entry or by a path), and a path also takes the version the import map gives the package, so require order cannot mix releases. A plain `require` of a path inside a package that is not a PicoRuby library is left to PicoRuby. ([#31](https://github.com/itojum/picoruby-libs/issues/31))
-- A file is inlined once even when it is reached both as an npm entry (`require 'pkg'`) and by its URL (`require 'pkg/lib/pkg.rb'` or `require_relative`). This removes the known limitation noted in 0.2.0. ([#31](https://github.com/itojum/picoruby-libs/issues/31))
 
 ## [0.2.0] - 2026-11-19
 
