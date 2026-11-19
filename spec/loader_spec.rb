@@ -132,6 +132,24 @@ RSpec.describe PicoRubyLibs do
       expect(described_class.find_requires(code).map(&:name)).to eq ['a']
     end
 
+    it 'reads quoted delimiters, interpolation, keywords and percent delimiters' do
+      code = [
+        "help = <<~'END-TEXT'", "require 'l1'", 'END-TEXT',
+        'text = "#{<<~EOS}"', "require 'l2'", 'EOS',
+        'puts "#{h["#"]}", <<~EOS', "require 'l3'", 'EOS',
+        'def help', 'return<<~EOS', "require 'l4'", 'EOS', 'end',
+        's = %$<<~EOS$',
+        't = %(#{<<~EOS})', "require 'l6'", 'EOS',
+        "u = %q(\#{<<~EOS})",
+        'puts %:#:, <<~EOS', "require 'l5'", 'EOS',
+        'x %= 2',
+        'class <<ENV',
+        "require 'real'",
+        'end',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
     it 'reads CRLF source' do
       code = "h = <<~EOS\r\ntext\r\nEOS\r\nrequire 'real'\r\n"
       expect(described_class.find_requires(code).map(&:name)).to eq ['real']
