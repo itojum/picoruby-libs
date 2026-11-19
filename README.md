@@ -93,9 +93,26 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 
 A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/npm/`).
 
+## Events
+
+The loader dispatches events on `document` so JavaScript on the page can tell when it is done:
+
+- `picoruby-libs:error` for each script that was not started (and once if the page's scripts or import map could not be read). `event.detail` is the error message, the same text sent to `console.error`.
+- `picoruby-libs:ready` once, after every script has been started as a task or skipped. It comes after any `picoruby-libs:error` events. The tasks have been created, not finished.
+
+```html
+<script>
+  document.addEventListener('picoruby-libs:error', e => showError(e.detail));
+  document.addEventListener('picoruby-libs:ready', () => hideSpinner());
+</script>
+```
+
+Add the listeners before `init.iife.js` runs, so none is missed.
+
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.
+- Requires inside heredocs and `=begin`/`=end` comments are left alone, but other multi-line strings (`%q{...}`, `'...'` spanning lines) are not tracked: a line in them that reads as a whole `require` statement is expanded. Heredocs are found by a small heuristic lexer, not a Ruby parser, so unusual code (e.g. `x <<Y` where `x` is a local variable) can be misread.
 - Line numbers in error messages refer to the expanded script. Each library is wrapped in `# --- picoruby-libs: name (url) ---` comments.
 - The loader starts tasks through `picorb_create_task`, the same PicoRuby.wasm function `init.iife.js` uses. It is not a documented API, so a PicoRuby.wasm release could change it. Pin the runtime version for anything you publish.
 
@@ -119,6 +136,13 @@ npm run check:builtins -- --version head       # or any version / dist-tag
 ```
 
 When it fails, it prints the names to add to or remove from `BUILTINS`.
+
+The E2E tests in `e2e/` run `loader.rb` on real PicoRuby.wasm in headless Chromium, with libraries served from a fake npm CDN (`e2e/fixtures/npm/`). They use the pinned `@picoruby/wasm-wasi` version in `e2e/server.mjs` unless `PICORUBY_WASM_VERSION` is set; CI runs both the pinned version and `latest`.
+
+```bash
+npm run test:e2e                                  # pinned PicoRuby.wasm
+PICORUBY_WASM_VERSION=latest npm run test:e2e     # latest
+```
 
 ## Releasing
 

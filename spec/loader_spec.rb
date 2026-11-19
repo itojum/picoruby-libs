@@ -66,6 +66,105 @@ RSpec.describe PicoRubyLibs do
       expect(found).to eq [[0, 'mylib'], [1, 'js'], [2, 'foo'], [8, './local']]
     end
 
+    it 'skips the bodies of heredocs' do
+      code = [
+        'HELP = <<~TXT',
+        "  require 'in_squiggly'",
+        'TXT',
+        "require 'a'",
+        "x = <<-'EOS'",
+        "require 'in_dash'",
+        '  EOS',
+        'y = <<RAW',
+        "require 'in_bare'",
+        '  RAW',
+        "require 'still_in_bare'",
+        'RAW',
+        "require 'b'",
+        'foo(<<~ONE, <<~"TWO")',
+        "  require 'in_one'",
+        'ONE',
+        "  require 'in_two'",
+        'TWO',
+        "require 'c'",
+      ].join("\n")
+
+      found = described_class.find_requires(code).map(&:name)
+      expect(found).to eq %w[a b c]
+    end
+
+    it 'does not take a shift, a string or a comment for a heredoc' do
+      code = [
+        'list <<item',
+        'class << self',
+        '# see <<~EOS',
+        'x = 1 # see <<~EOS',
+        'puts "<<~EOS"',
+        "puts 'a <<-EOS', `<<EOS`",
+        'n = 1 <<BITS',
+        'n = (m) <<BITS',
+        'n = m<<BITS',
+        "require 'a'",
+        'EOS',
+        'BITS',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'closes an indentable heredoc only on a terminator without trailing blanks' do
+      code = "h = <<~EOS\nEOS \nrequire 'literal'\n  EOS\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'steps over regexps and percent literals' do
+      code = [
+        'x = /<<~EOS/',
+        'y = %q{<<~EOS}',
+        'w = %w[<<~EOS a]',
+        'z = a / 2 + c / 3 <<X',
+        "require 'a'",
+        'puts %q{#}, <<~EOS',
+        "require 'in_heredoc'",
+        'EOS',
+        'q = n % m',
+        "require 'b'",
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq %w[a b]
+    end
+
+    it 'takes << after an identifier ending in a digit for a heredoc' do
+      code = "log2 <<~EOS\nrequire 'in_heredoc'\nEOS\nn = 2 <<X\nrequire 'a'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['a']
+    end
+
+    it 'reads quoted delimiters, interpolation, keywords and percent delimiters' do
+      code = [
+        "help = <<~'END-TEXT'", "require 'l1'", 'END-TEXT',
+        'text = "#{<<~EOS}"', "require 'l2'", 'EOS',
+        'puts "#{h["#"]}", <<~EOS', "require 'l3'", 'EOS',
+        'def help', 'return<<~EOS', "require 'l4'", 'EOS', 'end',
+        's = %$<<~EOS$',
+        't = %(#{<<~EOS})', "require 'l6'", 'EOS',
+        "u = %q(\#{<<~EOS})",
+        'puts %:#:, <<~EOS', "require 'l5'", 'EOS',
+        'x %= 2',
+        'class <<ENV',
+        "require 'real'",
+        'end',
+      ].join("\n")
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'reads CRLF source' do
+      code = "h = <<~EOS\r\ntext\r\nEOS\r\nrequire 'real'\r\n"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['real']
+    end
+
+    it 'finds heredocs after a string or as a method argument' do
+      code = "puts 'x', <<~A\nrequire 'in_a'\nA\nputs <<B\nrequire 'in_b'\nB\nrequire 'c'"
+      expect(described_class.find_requires(code).map(&:name)).to eq ['c']
+    end
+
     it 'finds require_relative lines and marks them relative' do
       code = "require_relative 'a'\n  require_relative('../b.rb') # c\nrequire 'c'"
       found = described_class.find_requires(code).map { |r| [r.index, r.name, r.relative?] }
@@ -82,6 +181,15 @@ RSpec.describe PicoRubyLibs do
     it 'keeps the @ of a scoped package' do
       expect(described_class.parse_spec('@a/b@1')).to eq ['@a/b', '1']
       expect(described_class.parse_spec('@a/b')).to eq ['@a/b', nil]
+    end
+  end
+
+  describe '.js_with_args' do
+    it 'reads the globals into constants and deletes them before the body runs' do
+      expect(described_class.js_with_args(%w[arg base], 'f(arg, base)')).to eq(
+        '(() => { const arg = window.__picoruby_libs_arg, base = window.__picoruby_libs_base; ' \
+        'delete window.__picoruby_libs_arg; delete window.__picoruby_libs_base; return (f(arg, base)); })()'
+      )
     end
   end
 
@@ -330,7 +438,7 @@ RSpec.describe PicoRubyLibs do
     # started tasks and reported errors are recorded.
     let(:boot_io_class) do
       Class.new(fake_io_class) do
-        attr_reader :tasks, :errors
+        attr_reader :tasks, :errors, :events
 
         def initialize(files, scripts, imports: {}, cdn: nil)
           super(files)
@@ -339,9 +447,15 @@ RSpec.describe PicoRubyLibs do
           @cdn = cdn
           @tasks = []
           @errors = []
+          @events = []
         end
 
-        def import_map = [@imports, @cdn]
+        def import_map
+          raise PicoRubyLibs::Error, 'bad import map' if @imports == :broken
+          [@imports, @cdn]
+        end
+
+        def dispatch_event(type, detail = nil) = @events << [type, detail]
         def app_scripts = @scripts
         def create_task(code, filename) = @tasks << [code, filename]
         def report_error(message) = @errors << message
@@ -355,8 +469,8 @@ RSpec.describe PicoRubyLibs do
         .merge(package('gone', '1.0.0', 'picoruby' => 'gone.rb'))
     end
 
-    def boot(scripts)
-      io = boot_io_class.new(files, scripts, cdn: cdn)
+    def boot(scripts, imports: {})
+      io = boot_io_class.new(files, scripts, imports: imports, cdn: cdn)
       described_class.boot(io)
       io
     end
@@ -401,6 +515,27 @@ RSpec.describe PicoRubyLibs do
       io = boot([[nil, 'missing.rb', 'https://site.test/missing.rb'], ['puts 2', nil, nil]])
       expect(io.errors).to eq ['picoruby-libs: script #1 (missing.rb) was not started: failed to load https://site.test/missing.rb']
       expect(io.tasks.map(&:first)).to eq ['puts 2']
+    end
+
+    describe 'events' do
+      it 'dispatches picoruby-libs:ready once, after the tasks are created' do
+        io = boot([['puts 1', nil, nil], ['puts 2', nil, nil]])
+        expect(io.events).to eq [['picoruby-libs:ready', nil]]
+      end
+
+      it 'dispatches picoruby-libs:error for each failed script, then ready' do
+        io = boot([[nil, 'x.rb', 'https://site.test/x.rb'], ['puts 2', nil, nil], [nil, 'y.rb', 'https://site.test/y.rb']])
+        expect(io.events.map(&:first)).to eq ['picoruby-libs:error', 'picoruby-libs:error', 'picoruby-libs:ready']
+        expect(io.events[0][1]).to eq io.errors[0]
+        expect(io.events[1][1]).to include('script #3 (y.rb)')
+      end
+
+      it 'dispatches error, then ready, when the scripts cannot be read at all' do
+        io = boot([['puts 1', nil, nil]], imports: :broken)
+        expect(io.tasks).to be_empty
+        expect(io.events).to eq [['picoruby-libs:error', 'picoruby-libs: no script was started: bad import map'],
+                                 ['picoruby-libs:ready', nil]]
+      end
     end
   end
 end

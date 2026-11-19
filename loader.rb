@@ -76,11 +76,35 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
+  # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
+  # `<<ID`, with the identifier optionally quoted.
+  # A quoted identifier may hold any character but its quote.
+  HEREDOC_START = /^<<([~-]?)(?:(["'`])(.*?)\2|([A-Za-z_][A-Za-z0-9_]*))/
+
   # Returns a Require for each require line in `code`.
   def self.find_requires(code)
     found = []
+    each_code_line(code) do |line, i|
+      m = line.match(REQUIRE_LINE)
+      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+    end
+    found
+  end
+
+  # Yields each line of `code` that is Ruby code, with its index: skips
+  # =begin/=end comments and the bodies of heredocs, and stops at __END__.
+  # Other multi-line strings (%q{...}, '...') are not tracked.
+  def self.each_code_line(code)
     in_comment = false
+    heredocs = [] # [[identifier, indentable], ...] still to be closed
     code.split("\n").each_with_index do |line, i|
+      line = line[0..-2] if line.end_with?("\r") # CRLF source
+      unless heredocs.empty?
+        id, indentable = heredocs[0]
+        # Only leading blanks may precede the terminator of <<~ / <<-.
+        heredocs.shift if (indentable ? line.sub(/^[ \t]+/, '') : line) == id
+        next
+      end
       if in_comment
         in_comment = false if line.start_with?('=end')
         next
@@ -90,10 +114,156 @@ module PicoRubyLibs
         next
       end
       break if line.strip == '__END__' && line.start_with?('__END__')
-      m = line.match(REQUIRE_LINE)
-      found << Require.new(i, m[1], m[3], m[2] == '_relative') if m
+      yield line, i
+      heredocs.concat(heredoc_starts(line))
     end
-    found
+  end
+
+  # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
+  # This is a heuristic lexer, not a Ruby parser: it steps over strings,
+  # regexps and percent literals that close on the line (looking into their
+  # #{...}), stops at a comment or at a literal that does not close, and
+  # takes `<<` for a shift where a value precedes it (`n <<X` after a
+  # number, a closing bracket, or an identifier with no blank before `<<`).
+  # A bare `<<ID` also needs an upper-case identifier (`list << item`).
+  def self.heredoc_starts(line)
+    starts = []
+    scan_code(line, 0, starts, false)
+    starts
+  end
+
+  # Keywords after which an expression starts, so `return<<~EOS` and
+  # `when /x/` read as literals.
+  EXPRESSION_KEYWORDS = %w[
+    return when if unless elsif while until and or not then do else in yield
+    case puts print p raise
+  ]
+
+  # Scans code in `line` from `pos`, adding the heredocs it opens to
+  # `starts`. In an interpolation (`interp`), returns the index after the
+  # `}` that closes it; otherwise, or when the line ends first, nil.
+  def self.scan_code(line, pos, starts, interp)
+    kind = :op    # what precedes: :op (start, operator), :ident or :value
+    spaced = true # whether a blank follows it
+    braces = 0
+    while pos < line.length
+      c = line[pos]
+      if c == ' ' || c == "\t"
+        spaced = true
+        pos += 1
+        next
+      end
+      after = nil # the index after a literal that closes on this line
+      if c == '#'
+        return nil
+      elsif c == '"' || c == '`'
+        after = literal_end(line, pos + 1, c, nil, starts, true)
+      elsif c == "'"
+        after = literal_end(line, pos + 1, c, nil, starts, false)
+      elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
+        after = literal_end(line, pos + 1, '/', nil, starts, true)
+      elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
+        open = m[0][-1]
+        close = PAIRS[open]
+        after = literal_end(line, pos + m[0].length, close || open, close ? open : nil,
+                            starts, !%w[q w i s].include?(m[1]))
+      elsif c == '<' && line[pos + 1] == '<'
+        m = line[pos..-1].match(HEREDOC_START)
+        quoted = !m.nil? && !m[2].to_s.empty?
+        id = m && (quoted ? m[3].to_s : m[4])
+        if m && expression_start?(kind, spaced, line[pos + 2]) &&
+           (!m[1].empty? || quoted || id == id.upcase)
+          starts << [id, !m[1].empty?]
+          after = pos + m[0].length
+        else
+          pos += 2
+          kind = :op
+          spaced = false
+          next
+        end
+      elsif c.match(/^[A-Za-z0-9_]$/)
+        word_end = pos
+        word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
+        word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
+        word = line[pos...word_end]
+        kind = if '0123456789'.include?(c) || word == 'class' # `class <<ENV`
+                 :value
+               elsif EXPRESSION_KEYWORDS.include?(word)
+                 :op
+               else
+                 :ident
+               end
+        spaced = false
+        pos = word_end
+        next
+      elsif c == '{'
+        braces += 1
+        kind = :op
+        spaced = false
+        pos += 1
+        next
+      elsif c == '}'
+        return pos + 1 if interp && braces == 0
+        braces -= 1
+        after = pos + 1
+      elsif ')]'.include?(c)
+        after = pos + 1
+      else
+        kind = :op
+        spaced = false
+        pos += 1
+        next
+      end
+      return nil if after.nil?
+      kind = :value
+      spaced = false
+      pos = after
+    end
+    nil
+  end
+
+  # A percent literal's opening: `%q(`, `%w[`, `%r{`, ... or a bare `%`
+  # with any delimiter but `=` (`x %= 2`).
+  PERCENT_START = /^%([qQwWiIrsx]?)[^A-Za-z0-9 \t=]/
+  PAIRS = { '(' => ')', '[' => ']', '{' => '}', '<' => '>' }
+
+  # Whether a literal (or a heredoc) can start at a token whose next
+  # character is `nxt`, after a token of `kind`. After an identifier it is
+  # an argument only with a blank before it and none after (`puts <<~X`,
+  # `foo /x/`); otherwise it is an operator (`a / b`, `n<<X`, `x % 2`).
+  def self.expression_start?(kind, spaced, nxt)
+    return true if kind == :op
+    return false if kind == :value
+    spaced && !nxt.nil? && nxt != ' ' && nxt != "\t" && nxt != '='
+  end
+
+  # The index after the `close` that ends a literal whose body starts at
+  # `from`, or nil when it does not end on this line. `open` (for bracket
+  # delimiters) nests. With `interp`, the code in #{...} is scanned for
+  # heredocs, so quotes inside it do not end the literal.
+  def self.literal_end(line, from, close, open, starts, interp)
+    depth = 0
+    i = from
+    while i < line.length
+      c = line[i]
+      if c == '\\'
+        i += 2
+        next
+      end
+      if interp && c == '#' && line[i + 1] == '{'
+        i = scan_code(line, i + 2, starts, true)
+        return nil if i.nil?
+        next
+      end
+      if c == close
+        return i + 1 if depth == 0
+        depth -= 1
+      elsif open && c == open
+        depth += 1
+      end
+      i += 1
+    end
+    nil
   end
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]
@@ -314,6 +484,15 @@ module PicoRubyLibs
   APP_SCRIPT = 'script[type="text/ruby-app"]'
   IMPORT_MAP = 'script[type="text/ruby-importmap"]'
 
+  # JavaScript that reads `names` from window.__picoruby_libs_<name> into
+  # local constants, deletes those globals, and returns the value of `body`
+  # (an expression that uses the constants).
+  def self.js_with_args(names, body)
+    reads = names.map { |n| "#{n} = window.__picoruby_libs_#{n}" }.join(', ')
+    deletes = names.map { |n| "delete window.__picoruby_libs_#{n};" }.join(' ')
+    "(() => { const #{reads}; #{deletes} return (#{body}); })()"
+  end
+
   # The file name PicoRuby reports in errors for the `n`th (1-based)
   # text/ruby-app script on the page: the last segment of the `src` URL's
   # path, without query or fragment, or `inline-n.rb` for an inline script.
@@ -339,12 +518,13 @@ module PicoRubyLibs
   class BrowserIO
     # Starts fetching `urls` at once without waiting. fetch_text then takes
     # the result of a prefetched URL instead of fetching it again.
+    # The pending fetches stay in window.__picoruby_libs_fetches until
+    # fetch_text takes them.
     def prefetch(urls)
-      JS.global[:__picoruby_libs_arg] = urls.join("\n")
-      JS.eval(<<~JS)
+      eval_with({ 'arg' => urls.join("\n") }, <<~JS)
         (() => {
           const fetches = window.__picoruby_libs_fetches = window.__picoruby_libs_fetches || {};
-          window.__picoruby_libs_arg.split(String.fromCharCode(10)).forEach(url => {
+          arg.split(String.fromCharCode(10)).forEach(url => {
             if (url && !fetches[url]) {
               fetches[url] = fetch(url).then(r => r.ok ? r.text() : null).catch(() => null);
             }
@@ -354,23 +534,20 @@ module PicoRubyLibs
     end
 
     def fetch_text(url)
-      JS.global[:__picoruby_libs_arg] = url
-      JS.eval(<<~JS).await
+      eval_with({ 'arg' => url }, <<~JS).await
         (() => {
           const fetches = window.__picoruby_libs_fetches || {};
-          const url = window.__picoruby_libs_arg;
-          const pending = fetches[url];
-          delete fetches[url];
-          return pending || fetch(url).then(r => r.ok ? r.text() : null);
+          const pending = fetches[arg];
+          delete fetches[arg];
+          return pending || fetch(arg).then(r => r.ok ? r.text() : null);
         })()
       JS
     end
 
     # Only the package.json fields the resolver reads, as a Hash.
     def fetch_json(url)
-      JS.global[:__picoruby_libs_arg] = url
-      pkg = JS.eval(<<~JS).await
-        fetch(window.__picoruby_libs_arg)
+      pkg = eval_with({ 'arg' => url }, <<~JS).await
+        fetch(arg)
           .then(r => r.ok ? r.json() : null)
           .then(p => p && {
             name: p.name, version: p.version, main: p.main,
@@ -382,9 +559,7 @@ module PicoRubyLibs
     end
 
     def absolute_url(path, base = nil)
-      JS.global[:__picoruby_libs_arg] = path
-      JS.global[:__picoruby_libs_base] = base
-      JS.eval('new URL(window.__picoruby_libs_arg, window.__picoruby_libs_base || document.baseURI).href')
+      eval_with({ 'arg' => path, 'base' => base }, 'new URL(arg, base || document.baseURI).href')
     end
 
     # [imports Hash, cdn or nil] from every text/ruby-importmap script.
@@ -452,31 +627,63 @@ module PicoRubyLibs
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
     def create_task(code, filename)
-      JS.global[:__picoruby_libs_arg] = code
-      JS.global[:__picoruby_libs_file] = filename
-      JS.eval(<<~JS)
-        window.__picoruby_libs_file
-          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'],
-                                 [window.__picoruby_libs_arg, window.__picoruby_libs_file])
-          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [window.__picoruby_libs_arg])
+      eval_with({ 'arg' => code, 'file' => filename }, <<~JS)
+        file
+          ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'], [arg, file])
+          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [arg])
       JS
     end
 
     def report_error(message)
-      JS.global[:__picoruby_libs_arg] = message
-      JS.eval('console.error(window.__picoruby_libs_arg)')
+      eval_with({ 'arg' => message }, 'console.error(arg)')
+    end
+
+    private
+
+    # Evaluates `body` with `args` ({ name => value }) passed through
+    # window.__picoruby_libs_<name>, which are removed before `body` runs so
+    # no value (such as a whole expanded script) stays on `window`.
+    def eval_with(args, body)
+      args.each { |name, value| JS.global[('__picoruby_libs_' + name).to_sym] = value }
+      JS.eval(PicoRubyLibs.js_with_args(args.keys, body))
+    end
+
+    # Dispatches a CustomEvent named `type` on document, with `detail` (a
+    # String or nil).
+    def dispatch_event(type, detail = nil)
+      JS.global[:__picoruby_libs_arg] = type
+      JS.global[:__picoruby_libs_detail] = detail
+      JS.eval(<<~JS)
+        document.dispatchEvent(new CustomEvent(window.__picoruby_libs_arg,
+                                               { detail: window.__picoruby_libs_detail }))
+      JS
     end
   end
 
+  READY_EVENT = 'picoruby-libs:ready'
+  ERROR_EVENT = 'picoruby-libs:error'
+
   # Expands and starts each text/ruby-app script in document order. A script
-  # that fails to expand is reported with io.report_error and skipped; the
-  # others still start.
+  # that fails to expand is reported and skipped; the others still start.
+  # Each failure is sent to console.error and dispatched on document as a
+  # picoruby-libs:error event whose detail is the message. When every script
+  # has been started or skipped, picoruby-libs:ready is dispatched, once.
   def self.boot(io = BrowserIO.new)
+    start_scripts(io)
+    io.dispatch_event(READY_EVENT)
+  end
+
+  def self.report(io, message)
+    io.report_error(message)
+    io.dispatch_event(ERROR_EVENT, message)
+  end
+
+  def self.start_scripts(io)
     begin
       imports, cdn = io.import_map
       scripts = io.app_scripts
     rescue => e
-      io.report_error("picoruby-libs: no script was started: #{e.message}")
+      report(io, "picoruby-libs: no script was started: #{e.message}")
       return
     end
     expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
@@ -487,7 +694,7 @@ module PicoRubyLibs
         raise Error, "failed to load #{url}" if code.nil?
         expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
       rescue => e
-        io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
+        report(io, "picoruby-libs: #{label} was not started: #{e.message}")
       end
     end
   end
