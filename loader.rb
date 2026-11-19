@@ -626,12 +626,16 @@ module PicoRubyLibs
 
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
+    # Raises Error when PicoRuby cannot compile the code or create the task
+    # (it returns -1 and prints the reason to the console).
     def create_task(code, filename)
-      eval_with({ 'arg' => code, 'file' => filename }, <<~JS)
-        file
+      status = eval_with({ 'arg' => code, 'file' => filename }, <<~JS)
+        String(file
           ? picorubyModule.ccall('picorb_create_task_with_filename', 'number', ['string', 'string'], [arg, file])
-          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [arg])
+          : picorubyModule.ccall('picorb_create_task', 'number', ['string'], [arg]))
       JS
+      return if status.to_s == '0'
+      raise Error, "PicoRuby could not compile the script or start its task (status #{status}; see the console for the reason)"
     end
 
     def report_error(message)
