@@ -179,6 +179,38 @@ RSpec.describe PicoRubyLibs do
     end
   end
 
+  describe '.find_other_requires' do
+    it 'finds require calls that are not a whole require line' do
+      code = [
+        "require 'whole'",
+        "require 'a' if x",
+        "require 'b'; require_relative('c')",
+        "x = 1 # require 'in_comment'",
+        "puts \"\#{y}\"; require 'd' # require 'e'",
+        "# require 'f' if x",
+        'H = <<~TXT',
+        "  require 'g' if x",
+        'TXT',
+        "obj.require 'h'",
+        "puts \"require_relative 'i'\", 'x' if require 'j' if y",
+        "#require_relative 'k'",
+        "puts 1 #require_relative 'k2'",
+        "puts 'a\\'b require 'l' if z'",
+        "puts %q{require_relative 'm'}, /require 'n'/",
+        "/#/; require_relative 'o'",
+        "puts \"require \"; require_relative \"p\"",
+        "obj. require 'q'; Mod::require 'r'",
+        "puts \"loaded: \#{require_relative 's'} 'x'\"",
+        "require \"\#{require_relative 't'}\" if enabled",
+        "options = { helper: require_relative('u') }; flag ? nil : require_relative('v')",
+        "o = { helper:require_relative('w') }; Mod::require 'x'",
+      ].join("\n")
+      expect(described_class.find_other_requires(code)).to eq [
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true], [16, 'p', true], [18, 's', true], [19, 't', true], [20, 'u', true], [20, 'v', true], [21, 'w', true],
+      ]
+    end
+  end
+
   describe '.parse_spec' do
     it 'splits a package name and version' do
       expect(described_class.parse_spec('mylib')).to eq ['mylib', nil]
@@ -460,6 +492,47 @@ RSpec.describe PicoRubyLibs do
       end
     end
 
+    describe 'warnings' do
+      let(:files) { libraries("require 'b' if x\nA = 1", 'B = 2').merge(package('leftpad', '1.0.0', 'main' => 'index.js')) }
+      let(:expander) { described_class.new(resolver(files)) }
+
+      it 'warns with the file and line about requires of libraries it does not expand' do
+        code = "require 'js' if x\nrequire 'leftpad' if x\nrequire 'a' if x\nrequire_relative 'r' unless y"
+        out = expander.expand_all(['puts 1', code])[1]
+        expect(out).to eq code
+        expect(expander.warnings.size).to eq 2
+        expect(expander.warnings[0]).to start_with("script #2:3: require 'a' was not expanded")
+        expect(expander.warnings[1]).to start_with("script #2:4: require_relative 'r' was not expanded")
+      end
+
+      it 'warns about requires inside a library, naming the library file' do
+        expander.expand("require 'a'")
+        expect(expander.warnings).to eq [
+          "#{cdn}a@1.0.0/a.rb:1: require 'b' was not expanded, so PicoRuby will raise LoadError. " \
+          'picoruby-libs only expands a require that is a whole statement on its own line',
+        ]
+      end
+
+      it 'does not raise for an import map entry that does not resolve' do
+        ex = described_class.new(resolver(files, imports: { 'optional' => 'npm:missing' }))
+        expect(ex.expand("require 'optional' if false")).to eq "require 'optional' if false"
+        expect(ex.warnings.size).to eq 1
+      end
+
+      it 'does not raise when looking a name up fails' do
+        r = resolver(files)
+        def r.resolve(name) = raise(name == 'broken' ? 'fetch failed' : 'unexpected')
+        ex = described_class.new(r)
+        expect(ex.expand("require 'broken' if false")).to eq "require 'broken' if false"
+        expect(ex.warnings.size).to eq 1
+      end
+
+      it 'is empty when every require is recognized' do
+        expander.expand("require 'b'\nrequire 'js'")
+        expect(expander.warnings).to be_empty
+      end
+    end
+
     it 'drops a circular require like Ruby does' do
       out = described_class.new(resolver(libraries("require 'b'", "require 'a'"))).expand("require 'a'")
       expect(out).to include('already loaded')
@@ -592,7 +665,7 @@ RSpec.describe PicoRubyLibs do
     # started tasks and reported errors are recorded.
     let(:boot_io_class) do
       Class.new(fake_io_class) do
-        attr_reader :tasks, :errors, :events
+        attr_reader :tasks, :errors, :events, :warnings
 
         def initialize(files, scripts, imports: {}, cdn: nil)
           super(files)
@@ -602,6 +675,7 @@ RSpec.describe PicoRubyLibs do
           @tasks = []
           @errors = []
           @events = []
+          @warnings = []
         end
 
         def import_map
@@ -613,6 +687,7 @@ RSpec.describe PicoRubyLibs do
         def app_scripts = @scripts
         def create_task(code, filename) = @tasks << [code, filename]
         def report_error(message) = @errors << message
+        def warn(message) = @warnings << message
       end
     end
 
@@ -663,6 +738,13 @@ RSpec.describe PicoRubyLibs do
       expect(io.errors[0]).to include('script #1 was not started: no task')
       expect(io.tasks.size).to eq 1
       expect(io.tasks[0][0]).to include('A = 1')
+    end
+
+    it 'prints a warning for each require it leaves for PicoRuby, once' do
+      io = boot([["require 'a' if x\nputs 1", nil, nil], ['puts 2', nil, nil]])
+      expect(io.warnings.size).to eq 1
+      expect(io.warnings[0]).to start_with("script #1:1: require 'a' was not expanded")
+      expect(io.tasks.size).to eq 2
     end
 
     it 'reports a script whose src cannot be fetched and starts the others' do

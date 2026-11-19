@@ -76,6 +76,11 @@ module PicoRubyLibs
 
   # ------------------------------------------------------------------ parsing
 
+  # A call of require / require_relative with a string literal anywhere in a
+  # line, for finding the ones REQUIRE_LINE does not take (`require 'a' if x`,
+  # `require 'a'; require 'b'`).
+  REQUIRE_CALL = /(^|[^A-Za-z0-9_.@$])require(_relative)?[ \t]*\(?[ \t]*(['"])([^'"]*)\3/
+
   # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
   # `<<ID`, with the identifier optionally quoted.
   # A quoted identifier may hold any character but its quote.
@@ -90,6 +95,62 @@ module PicoRubyLibs
     end
     found
   end
+
+  # [[index, name, relative], ...] for the require calls in `code` that are
+  # not a whole require line, so are left for PicoRuby. Calls inside a
+  # string or a comment are skipped.
+  def self.find_other_requires(code)
+    found = []
+    each_code_line(code) do |line, i|
+      next if line.match(REQUIRE_LINE)
+      code_at = code_mask(line)
+      rest = line
+      offset = 0
+      while (m = rest.match(REQUIRE_CALL))
+        at = offset + rest.index(m[0])
+        word = at + m[1].length
+        name = m[4]
+        # A name with #{...} is not a literal one: leave it alone.
+        if code_at[word] && !receiver_before?(line, word) && !name.empty? && !name.include?('#{')
+          found << [i, name, m[2] == '_relative']
+        end
+        # Go on from just past `require`: a match may run into a real call
+        # (`"require "; require 'x'`) or hold one (`"#{require 'x'}"`).
+        offset = word + 1
+        rest = line[offset..-1]
+      end
+    end
+    found
+  end
+
+  # Whether the word at `word` in `line` is a method call on a receiver
+  # (`obj.require`, `obj. require`, `Mod::require`). A single `:` is not
+  # one (`{ key: require 'x' }`, `a ? b : require 'x'`).
+  def self.receiver_before?(line, word)
+    i = word - 1
+    i -= 1 while i >= 0 && (line[i] == ' ' || line[i] == "\t")
+    return false if i < 0
+    line[i] == '.' || (line[i] == ':' && i > 0 && line[i - 1] == ':')
+  end
+
+  # [true/false, ...] for each character of `line`: whether it is code, not
+  # inside a literal (string, regexp, percent literal, character literal)
+  # or a comment. Code in #{...} counts as code. Uses the heredoc scan's
+  # lexer.
+  def self.code_mask(line)
+    spans = []
+    scan_code(line, 0, [], false, spans)
+    mask = Array.new(line.length, true)
+    spans.each do |span|
+      i = span[0]
+      while i < span[1]
+        mask[i] = false
+        i += 1
+      end
+    end
+    mask
+  end
+
 
   # The indentation of the least indented code line (not blank, not a
   # comment). A script written in the page is often indented as a whole;
@@ -157,9 +218,10 @@ module PicoRubyLibs
   VALUE_KEYWORDS = %w[true false nil self class __FILE__ __LINE__]
 
   # Scans code in `line` from `pos`, adding the heredocs it opens to
-  # `starts`. In an interpolation (`interp`), returns the index after the
+  # `starts`, and to `spans` (when given) [from, to] for each literal and
+  # for a comment. In an interpolation (`interp`), returns the index after the
   # `}` that closes it; otherwise, or when the line ends first, nil.
-  def self.scan_code(line, pos, starts, interp)
+  def self.scan_code(line, pos, starts, interp, spans = nil)
     kind = :op    # what precedes: :op (start, operator), :ident or :value
     spaced = true # whether a blank follows it
     braces = 0
@@ -171,21 +233,27 @@ module PicoRubyLibs
         next
       end
       after = nil # the index after a literal that closes on this line
+      literal = true
       if c == '#'
+        spans << [pos, line.length] if spans
         return nil
       elsif c == '"' || c == '`'
-        after = literal_end(line, pos + 1, c, nil, starts, true)
+        after = literal_end(line, pos + 1, c, nil, starts, true, spans)
+        literal = false # recorded by literal_end
       elsif c == "'"
-        after = literal_end(line, pos + 1, c, nil, starts, false)
+        after = literal_end(line, pos + 1, c, nil, starts, false, spans)
+        literal = false
       elsif c == '?' && kind == :op && char_literal_end(line, pos)
         after = char_literal_end(line, pos) # ?# / ?" / ?\n
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
-        after = literal_end(line, pos + 1, '/', nil, starts, true)
+        after = literal_end(line, pos + 1, '/', nil, starts, true, spans)
+        literal = false
       elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
         open = m[0][-1]
         close = PAIRS[open]
         after = literal_end(line, pos + m[0].length, close || open, close ? open : nil,
-                            starts, !%w[q w i s].include?(m[1]))
+                            starts, !%w[q w i s].include?(m[1]), spans, pos)
+        literal = false
       elsif c == '<' && line[pos + 1] == '<'
         m = line[pos..-1].match(HEREDOC_START)
         quoted = !m.nil? && !m[2].to_s.empty?
@@ -225,14 +293,17 @@ module PicoRubyLibs
         return pos + 1 if interp && braces == 0
         braces -= 1
         after = pos + 1
+        literal = false
       elsif ')]'.include?(c)
         after = pos + 1
+        literal = false
       else
         kind = :op
         spaced = false
         pos += 1
         next
       end
+      spans << [pos, after || line.length] if spans && literal
       return nil if after.nil?
       kind = :value
       spaced = false
@@ -273,9 +344,12 @@ module PicoRubyLibs
   # The index after the `close` that ends a literal whose body starts at
   # `from`, or nil when it does not end on this line. `open` (for bracket
   # delimiters) nests. With `interp`, the code in #{...} is scanned for
-  # heredocs, so quotes inside it do not end the literal.
-  def self.literal_end(line, from, close, open, starts, interp)
+  # heredocs, so quotes inside it do not end the literal. `spans` (when
+  # given) gets [from, to] for the literal's text from `start`, leaving the
+  # code in #{...} out.
+  def self.literal_end(line, from, close, open, starts, interp, spans = nil, start = from - 1)
     depth = 0
+    seg = start # where the literal text being recorded in `spans` starts
     i = from
     while i < line.length
       c = line[i]
@@ -284,20 +358,27 @@ module PicoRubyLibs
         next
       end
       if interp && c == '#' && line[i + 1] == '{'
-        i = scan_code(line, i + 2, starts, true)
+        spans << [seg, i + 2] if spans
+        i = scan_code(line, i + 2, starts, true, spans)
         return nil if i.nil?
+        seg = i - 1
         next
       end
       if c == close
-        return i + 1 if depth == 0
+        if depth == 0
+          spans << [seg, i + 1] if spans
+          return i + 1
+        end
         depth -= 1
       elsif open && c == open
         depth += 1
       end
       i += 1
     end
+    spans << [seg, line.length] if spans
     nil
   end
+
 
   # "mylib" / "mylib@1.2.3" / "@scope/pkg@1" -> [name, version or nil]
   def self.parse_spec(spec)
@@ -481,10 +562,15 @@ module PicoRubyLibs
   # library are expanded the same way, so a library can depend on another one
   # by requiring it. Fetched files are cached, so each is fetched once.
   class Expander
+    # Messages about requires left for PicoRuby that likely name a library,
+    # e.g. `require 'mylib' if x`. Each starts with "file:line: ".
+    attr_reader :warnings
+
     def initialize(resolver)
       @resolver = resolver
       @loaded = {}
       @sources = {}
+      @warnings = []
     end
 
     # `bases` are the URLs `require_relative` resolves against, one per code
@@ -515,6 +601,7 @@ module PicoRubyLibs
       # The file being expanded counts as loaded, so a circular
       # require_relative back to it (e.g. from a script's own src) is dropped.
       @loaded[base] = true if base
+      warn_other_requires(code, base, where)
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
       top = PicoRubyLibs.top_indent(code).length
@@ -588,6 +675,31 @@ module PicoRubyLibs
 
     private
 
+    # A require_relative always names a file to inline; a require is checked
+    # with the resolver, so built-ins and non-library packages pass quietly.
+    def warn_other_requires(code, base, where)
+      PicoRubyLibs.find_other_requires(code).each do |found|
+        index, name, relative = found
+        next unless relative || library?(name)
+        call = relative ? "require_relative '#{name}'" : "require '#{name}'"
+        @warnings << "#{where}:#{index + 1}: #{call} was not expanded, so PicoRuby " +
+                     'will raise LoadError. picoruby-libs only expands a require ' +
+                     'that is a whole statement on its own line'
+      end
+    end
+
+    # Whether `require name` would be inlined. An error while resolving it (an
+    # import map entry that does not resolve, a failed fetch, a broken
+    # package.json) counts as yes, but is not raised: the require is not
+    # expanded, and may never run (`require 'x' if false`).
+    def library?(name)
+      begin
+        !@resolver.resolve(name).nil?
+      rescue => e
+        true
+      end
+    end
+
     # Tells io which files are about to be read, so it can fetch them in
     # parallel. Files already read or already inlined in this script are
     # left out.
@@ -597,7 +709,7 @@ module PicoRubyLibs
         next if lib.nil? || @loaded[lib.id] || @sources.key?(lib.url) || urls.include?(lib.url)
         urls << lib.url
       end
-      @resolver.io.prefetch(urls) unless urls.empty?
+      @resolver.io.prefetch(urls) if !urls.empty? && @resolver.io.respond_to?(:prefetch)
     end
 
     def source(url)
@@ -753,6 +865,11 @@ module PicoRubyLibs
       scripts
     end
 
+    # Shows `message` as a warning in the browser console.
+    def warn(message)
+      eval_with({ 'arg' => "picoruby-libs: #{message}" }, 'console.warn(arg)')
+    end
+
     # Starts `code` as a new PicoRuby task, as init.iife.js does for a
     # text/ruby script.
     # Raises Error when PicoRuby cannot compile the code or create the task
@@ -825,6 +942,8 @@ module PicoRubyLibs
       rescue => e
         report(io, "picoruby-libs: #{label} was not started: #{e.message}")
       end
+      expander.warnings.each { |w| io.warn(w) }
+      expander.warnings.clear
     end
   end
 end
