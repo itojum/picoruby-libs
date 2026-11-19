@@ -184,6 +184,7 @@ RSpec.describe PicoRubyLibs do
         "obj.require 'h'",
         "puts \"require_relative 'i'\", 'x' if require 'j' if y",
         "#require_relative 'k'",
+        "puts 1 #require_relative 'k2'",
         "puts 'a\\'b require 'l' if z'",
       ].join("\n")
       expect(described_class.find_other_requires(code)).to eq [
