@@ -252,6 +252,20 @@ RSpec.describe PicoRubyLibs::Bundle do
     expect(err).to include('npm package not found: greeter@9.9.9', "from require 'greeter' at #{app}:1")
   end
 
+  it 'does not reuse a locked entry for a name the import map no longer maps to npm' do
+    File.write(lockfile, JSON.generate(
+      'lockfileVersion' => 1,
+      'requires' => { 'shout' => { 'import' => nil, 'id' => 'shout', 'url' => "#{cdn}shout@2.0.0/shout.rb" } },
+      'integrity' => {},
+    ))
+    write_importmap({})
+    File.write(app, "require 'shout'\n")
+    status, out, err = run('bundle', app, '--importmap', importmap)
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include("require 'shout'")
+    expect(out).not_to include('module Shout')
+  end
+
   describe 'FileIO' do
     let(:io) { PicoRubyLibs::Bundle::FileIO.new('file:///') }
 

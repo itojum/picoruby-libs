@@ -403,6 +403,19 @@ module PicoRubyLibs
       library(url, url)
     end
 
+    # Whether `name` is loaded from npm: the import map maps it to npm, or it
+    # is a path inside a package the import map maps to npm under its own
+    # name. The bundle CLI checks it before reusing a locked entry.
+    def npm_name?(name)
+      if @imports.key?(name)
+        mapped = @imports[name]
+        return mapped.is_a?(String) && mapped.start_with?('npm:')
+      end
+      return false if name.start_with?('.') || name.start_with?('/') || @builtins.include?(name)
+      pkg_spec, path = PicoRubyLibs.split_npm_path(name)
+      !path.empty? && !npm_mapping(PicoRubyLibs.parse_spec(pkg_spec)[0]).nil?
+    end
+
     # The SRI hash the import map gives one of `urls`, or the same file on
     # another CDN, or nil.
     def integrity(urls)
@@ -448,22 +461,23 @@ module PicoRubyLibs
       end
       return nil if name.start_with?('.') || name.start_with?('/')
       return nil if @builtins.include?(name)
-      pkg_spec, path = PicoRubyLibs.split_npm_path(name)
-      pkg_name = PicoRubyLibs.parse_spec(pkg_spec)[0]
-      return resolve_npm(name, name) if !path.empty? && npm_mapping(pkg_name)
-      suggest_mapping(pkg_name) if path.empty?
+      return resolve_npm(name, name) if npm_name?(name)
+      suggest_mapping(name) if PicoRubyLibs.split_npm_path(name)[1].empty?
       nil
     end
 
     # Warns, through io.warn when the io has it, when `name` is a PicoRuby
     # library on npm, since the loader no longer loads it unless mapped.
+    # The hint keys the mapping by the name as required ("mylib@1.2.3"
+    # too), since import-map keys match require names exactly.
     def suggest_mapping(name)
       return unless @io.respond_to?(:warn)
-      pkg = package_json(name, nil)
+      pkg_name, version = PicoRubyLibs.parse_spec(name)
+      pkg = package_json(pkg_name, version)
       return if pkg.nil? || PicoRubyLibs.ruby_entry(pkg).nil?
       @io.warn("picoruby-libs: require '#{name}' is left to PicoRuby. " \
-               "npm has a PicoRuby library named #{name}; to load it, add " \
-               "\"#{name}\": \"npm:#{name}@#{pkg['version']}\" to \"imports\" in a text/ruby-importmap script.")
+               "npm has a PicoRuby library named #{pkg_name}; to load it, add " \
+               "\"#{name}\": \"npm:#{pkg_name}@#{pkg['version']}\" to \"imports\" in a text/ruby-importmap script.")
     end
 
     # Raises unless `spec` names a PicoRuby library, or a file inside an npm
@@ -475,6 +489,11 @@ module PicoRubyLibs
     # way.
     def resolve_npm(spec, require_name)
       pkg_spec, path = PicoRubyLibs.split_npm_path(spec)
+      # Checked before anything is fetched: a path that climbs out of the
+      # package would load one the import map does not name.
+      if path.split('/').include?('..') || path.include?('\\') || path.downcase.include?('%2e')
+        raise Error, "#{spec}: a path inside a package cannot use '..', '\\' or '%2e'"
+      end
       name, version = PicoRubyLibs.parse_spec(pkg_spec)
       # Without a version, a path takes the version the import map gives the
       # package, so it matches the entry that mapping loads. Otherwise reuse
@@ -496,9 +515,9 @@ module PicoRubyLibs
       # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
       # file look like two.
       base = "#{@package_cdn["#{name}@#{pkg['version']}"]}#{pkg['name']}@#{pkg['version']}/"
-      entry_url = entry && @io.absolute_url(entry.sub(/^\.?\//, ''), base)
+      entry_url = entry && inside_package(@io.absolute_url(entry.sub(/^\.?\//, ''), base), base, spec)
       return library(pkg['name'], entry_url) if path.empty?
-      url = @io.absolute_url(path, base)
+      url = inside_package(@io.absolute_url(path, base), base, spec)
       # A path to the entry file is the package itself, so it keeps another
       # release of the package from being inlined too.
       library(url == entry_url ? pkg['name'] : url, url)
@@ -510,6 +529,13 @@ module PicoRubyLibs
       cdn = @cdns.find { |c| url.start_with?(c) }
       return nil if cdn.nil?
       PicoRubyLibs.parse_spec(PicoRubyLibs.split_npm_path(url[cdn.length..-1])[0])
+    end
+
+    # `url`, when it is inside the package directory `base`. A path that
+    # leaves it would load a package the import map does not name.
+    def inside_package(url, base, spec)
+      raise Error, "#{spec}: #{url} is outside the package (#{base})" unless url.start_with?(base)
+      url
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.

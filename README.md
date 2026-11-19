@@ -44,7 +44,7 @@ Rules:
 - Each script gets its own copy of each library it requires, inlined at its first `require` in that script. Later requires of it in the same script are dropped, and so is a circular one, as in Ruby. Scripts run as separate tasks that can interleave at an `await`, so a script never relies on another script having loaded a library first. A library required by several scripts therefore runs its top-level code once per script; its files are fetched once.
 - Requires inside a library are expanded the same way, so a library depends on another by requiring it. The page maps the libraries a library depends on too.
 - A name the import map does not map is left in the script for PicoRuby to handle. This is how built-ins like `require 'js'` keep working. When such a name is a PicoRuby library on npm, the loader says so in the console, with the line to add to the import map. Known built-ins are not looked up on npm at all.
-- `require 'pkg/lib/x.rb'` loads a file inside the npm package `pkg` when the import map maps `pkg`.
+- `require 'pkg/lib/x.rb'` loads a file inside the npm package `pkg` when the import map maps `pkg`. The path must stay inside the package: `..`, `\` and `%2e` are refused.
 - Relative requires (`require './x'`) are left as they are. Use `require_relative` instead.
 - If a script cannot be expanded (a library or its `src` cannot be fetched, for example), that script is not started and the error goes to the browser console with each `require` that led to it, as `from require 'name' at file:line`. The other scripts still start.
 

@@ -296,6 +296,17 @@ RSpec.describe PicoRubyLibs do
         ]
       end
 
+      it 'keys the suggested mapping by the name as required, and looks up that version' do
+        r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb').merge(
+                       "#{cdn}mylib@1.0.0/package.json" => { 'name' => 'mylib', 'version' => '1.0.0', 'picoruby' => 'lib/mylib.rb' },
+                     ), imports: {})
+        r.resolve('mylib@1.0.0')
+        expect(r.io.warnings).to eq [
+          "picoruby-libs: require 'mylib@1.0.0' is left to PicoRuby. npm has a PicoRuby library named mylib; " \
+          'to load it, add "mylib@1.0.0": "npm:mylib@1.0.0" to "imports" in a text/ruby-importmap script.',
+        ]
+      end
+
       it 'does not look anything up when the io cannot warn' do
         io = fake_io_class.new({})
         io.singleton_class.send(:undef_method, :warn)
@@ -306,6 +317,22 @@ RSpec.describe PicoRubyLibs do
     end
 
     describe 'a path inside a package' do
+      it 'cannot leave the package it is mapped to' do
+        r = resolver(package('allowed', '1.0.0', 'picoruby' => 'a.rb'), imports: { 'allowed' => 'npm:allowed@1.0.0' })
+        %w[
+          allowed/../unmapped@9.0.0/lib/unmapped.rb
+          allowed/%2e%2e/unmapped@9.0.0/lib/unmapped.rb
+          allowed/lib\\..\\..\\unmapped@9.0.0/x.rb
+        ].each do |name|
+          expect { r.resolve(name) }.to raise_error(PicoRubyLibs::Error, /cannot use/)
+        end
+      end
+
+      it 'refuses an entry file outside its package' do
+        r = resolver(package('sneaky', '1.0.0', 'picoruby' => '../other@1.0.0/x.rb'), imports: { 'sneaky' => 'npm:sneaky' })
+        expect { r.resolve('sneaky') }.to raise_error(PicoRubyLibs::Error, /outside the package/)
+      end
+
       it 'is pinned to the version package.json reports' do
         r = resolver(package('mylib', '1.2.3', 'picoruby' => 'lib/mylib.rb'))
         lib = r.resolve('mylib/lib/extra.rb')
