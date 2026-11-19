@@ -1,5 +1,5 @@
 require 'uri'
-PICORUBY_LIBS_NO_BOOT = true
+PICORUBY_LIBS_NO_BOOT = true unless defined?(PICORUBY_LIBS_NO_BOOT)
 require_relative '../loader'
 
 RSpec.describe PicoRubyLibs do
