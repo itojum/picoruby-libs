@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A `require` line inside a heredoc (`<<~ID`, `<<-ID`, `<<ID`, quoted or not) is no longer expanded. Other multi-line strings are still not tracked; see Limitations in the README. ([#14](https://github.com/itojum/picoruby-libs/issues/14))
 - A `text/ruby-importmap` script that is not valid JSON (or not a JSON object) raises `PicoRubyLibs::Error` naming the script by its position on the page and its `id`, with the parser's message, instead of the bare `JSON.parse` error. ([#22](https://github.com/itojum/picoruby-libs/issues/22))
 
 ## [0.2.0] - 2026-11-19
