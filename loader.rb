@@ -73,7 +73,8 @@ module PicoRubyLibs
 
   # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
   # `<<ID`, with the identifier optionally quoted.
-  HEREDOC_START = /^<<([~-]?)(["'`]?)([A-Za-z_][A-Za-z0-9_]*)\2/
+  # A quoted identifier may hold any character but its quote.
+  HEREDOC_START = /^<<([~-]?)(?:(["'`])(.*?)\2|([A-Za-z_][A-Za-z0-9_]*))/
 
   # Returns a Require for each require line in `code`.
   def self.find_requires(code)
@@ -126,16 +127,32 @@ module PicoRubyLibs
   end
 
   # [[identifier, indentable], ...] for the heredocs `line` opens, in order.
-  # Steps over strings, regexps and percent literals that close on the line,
-  # stops at a comment or at one that does not close, and takes `<<` for a
-  # shift where a value precedes it (`n <<X` after a number, a closing
-  # bracket, or an identifier with no blank before `<<`). A bare `<<ID`
-  # also needs an upper-case identifier (`list << item`).
+  # This is a heuristic lexer, not a Ruby parser: it steps over strings,
+  # regexps and percent literals that close on the line (looking into their
+  # #{...}), stops at a comment or at a literal that does not close, and
+  # takes `<<` for a shift where a value precedes it (`n <<X` after a
+  # number, a closing bracket, or an identifier with no blank before `<<`).
+  # A bare `<<ID` also needs an upper-case identifier (`list << item`).
   def self.heredoc_starts(line)
     starts = []
+    scan_code(line, 0, starts, false)
+    starts
+  end
+
+  # Keywords after which an expression starts, so `return<<~EOS` and
+  # `when /x/` read as literals.
+  EXPRESSION_KEYWORDS = %w[
+    return when if unless elsif while until and or not then do else in yield
+    case puts print p raise
+  ]
+
+  # Scans code in `line` from `pos`, adding the heredocs it opens to
+  # `starts`. In an interpolation (`interp`), returns the index after the
+  # `}` that closes it; otherwise, or when the line ends first, nil.
+  def self.scan_code(line, pos, starts, interp)
     kind = :op    # what precedes: :op (start, operator), :ident or :value
     spaced = true # whether a blank follows it
-    pos = 0
+    braces = 0
     while pos < line.length
       c = line[pos]
       if c == ' ' || c == "\t"
@@ -145,23 +162,25 @@ module PicoRubyLibs
       end
       after = nil # the index after a literal that closes on this line
       if c == '#'
-        break
-      elsif c == '"' || c == "'" || c == '`'
-        after = literal_end(line, pos + 1, c, nil)
-        return starts if after.nil?
+        return nil
+      elsif c == '"' || c == '`'
+        after = literal_end(line, pos + 1, c, nil, starts, true)
+      elsif c == "'"
+        after = literal_end(line, pos + 1, c, nil, starts, false)
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
-        after = literal_end(line, pos + 1, '/', nil)
-        return starts if after.nil?
+        after = literal_end(line, pos + 1, '/', nil, starts, true)
       elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
         open = m[0][-1]
         close = PAIRS[open]
-        after = literal_end(line, pos + m[0].length, close || open, close ? open : nil)
-        return starts if after.nil?
+        after = literal_end(line, pos + m[0].length, close || open, close ? open : nil,
+                            starts, !%w[q w i s].include?(m[1]))
       elsif c == '<' && line[pos + 1] == '<'
         m = line[pos..-1].match(HEREDOC_START)
+        quoted = !m.nil? && !m[2].to_s.empty?
+        id = m && (quoted ? m[3].to_s : m[4])
         if m && expression_start?(kind, spaced, line[pos + 2]) &&
-           (!m[1].empty? || !m[2].empty? || m[3] == m[3].upcase)
-          starts << [m[3], !m[1].empty?]
+           (!m[1].empty? || quoted || id == id.upcase)
+          starts << [id, !m[1].empty?]
           after = pos + m[0].length
         else
           pos += 2
@@ -173,11 +192,28 @@ module PicoRubyLibs
         word_end = pos
         word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
         word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
-        kind = '0123456789'.include?(c) ? :value : :ident
+        word = line[pos...word_end]
+        kind = if '0123456789'.include?(c) || word == 'class' # `class <<ENV`
+                 :value
+               elsif EXPRESSION_KEYWORDS.include?(word)
+                 :op
+               else
+                 :ident
+               end
         spaced = false
         pos = word_end
         next
-      elsif ')]}'.include?(c)
+      elsif c == '{'
+        braces += 1
+        kind = :op
+        spaced = false
+        pos += 1
+        next
+      elsif c == '}'
+        return pos + 1 if interp && braces == 0
+        braces -= 1
+        after = pos + 1
+      elsif ')]'.include?(c)
         after = pos + 1
       else
         kind = :op
@@ -185,21 +221,23 @@ module PicoRubyLibs
         pos += 1
         next
       end
+      return nil if after.nil?
       kind = :value
       spaced = false
       pos = after
     end
-    starts
+    nil
   end
 
-  # `%q(`, `%w[`, `%r{`, ... or a bare `%(`: a percent literal's opening.
-  PERCENT_START = /^%([qQwWiIrsx][^A-Za-z0-9 \t]|[(\[{<|!\/^])/
+  # A percent literal's opening: `%q(`, `%w[`, `%r{`, ... or a bare `%`
+  # with any delimiter but `=` (`x %= 2`).
+  PERCENT_START = /^%([qQwWiIrsx]?)[^A-Za-z0-9 \t=]/
   PAIRS = { '(' => ')', '[' => ']', '{' => '}', '<' => '>' }
 
   # Whether a literal (or a heredoc) can start at a token whose next
   # character is `nxt`, after a token of `kind`. After an identifier it is
   # an argument only with a blank before it and none after (`puts <<~X`,
-  # `if /x/`); otherwise it is an operator (`a / b`, `n<<X`, `x % 2`).
+  # `foo /x/`); otherwise it is an operator (`a / b`, `n<<X`, `x % 2`).
   def self.expression_start?(kind, spaced, nxt)
     return true if kind == :op
     return false if kind == :value
@@ -208,14 +246,20 @@ module PicoRubyLibs
 
   # The index after the `close` that ends a literal whose body starts at
   # `from`, or nil when it does not end on this line. `open` (for bracket
-  # delimiters) nests.
-  def self.literal_end(line, from, close, open)
+  # delimiters) nests. With `interp`, the code in #{...} is scanned for
+  # heredocs, so quotes inside it do not end the literal.
+  def self.literal_end(line, from, close, open, starts, interp)
     depth = 0
     i = from
     while i < line.length
       c = line[i]
       if c == '\\'
         i += 2
+        next
+      end
+      if interp && c == '#' && line[i + 1] == '{'
+        i = scan_code(line, i + 2, starts, true)
+        return nil if i.nil?
         next
       end
       if c == close
