@@ -79,7 +79,7 @@ module PicoRubyLibs
   # A call of require / require_relative with a string literal anywhere in a
   # line, for finding the ones REQUIRE_LINE does not take (`require 'a' if x`,
   # `require 'a'; require 'b'`).
-  REQUIRE_CALL = /(^|[^A-Za-z0-9_.:@$])require(_relative)?[ \t]*\(?[ \t]*(['"])([^'"]*)\3/
+  REQUIRE_CALL = /(^|[^A-Za-z0-9_.@$])require(_relative)?[ \t]*\(?[ \t]*(['"])([^'"]*)\3/
 
   # The start of a heredoc at the beginning of a string: `<<~ID`, `<<-ID`, or
   # `<<ID`, with the identifier optionally quoted.

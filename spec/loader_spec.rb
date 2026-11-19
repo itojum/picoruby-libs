@@ -203,9 +203,10 @@ RSpec.describe PicoRubyLibs do
         "puts \"loaded: \#{require_relative 's'} 'x'\"",
         "require \"\#{require_relative 't'}\" if enabled",
         "options = { helper: require_relative('u') }; flag ? nil : require_relative('v')",
+        "o = { helper:require_relative('w') }; Mod::require 'x'",
       ].join("\n")
       expect(described_class.find_other_requires(code)).to eq [
-        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true], [16, 'p', true], [18, 's', true], [19, 't', true], [20, 'u', true], [20, 'v', true],
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false], [15, 'o', true], [16, 'p', true], [18, 's', true], [19, 't', true], [20, 'u', true], [20, 'v', true], [21, 'w', true],
       ]
     end
   end
