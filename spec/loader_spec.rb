@@ -145,6 +145,8 @@ RSpec.describe PicoRubyLibs do
         'x %= 2',
         'c = [?#, ?", ?\\\\, <<~EOS]', "require 'l7'", 'EOS',
         'y = a ? b : c',
+        'x = true ?"#" : "no"; text = <<~EOS', "require 'l8'", 'EOS',
+        'flag = 1', 'y = flag ?%q{<<~EOS} : %q{no}',
         'class <<ENV',
         "require 'real'",
         'end',
