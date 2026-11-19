@@ -375,9 +375,12 @@ module PicoRubyLibs
       # Resolved like a URL, so dot segments ("lib/./x.rb") cannot make one
       # file look like two.
       base = "#{@cdn}#{pkg['name']}@#{pkg['version']}/"
-      return Library.new(pkg['name'], @io.absolute_url(entry.sub(/^\.?\//, ''), base)) if path.empty?
+      entry_url = entry && @io.absolute_url(entry.sub(/^\.?\//, ''), base)
+      return Library.new(pkg['name'], entry_url) if path.empty?
       url = @io.absolute_url(path, base)
-      Library.new(url, url)
+      # A path to the entry file is the package itself, so it keeps another
+      # release of the package from being inlined too.
+      Library.new(url == entry_url ? pkg['name'] : url, url)
     end
 
     # package.json of `name` at `version` (nil: the latest), fetched once.
