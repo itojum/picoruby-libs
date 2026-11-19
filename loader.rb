@@ -91,6 +91,19 @@ module PicoRubyLibs
     found
   end
 
+  # The indentation of the least indented code line (not blank, not a
+  # comment). A script written in the page is often indented as a whole;
+  # its top level is at this indentation.
+  def self.top_indent(code)
+    top = nil
+    each_code_line(code) do |line, _i|
+      next if line.strip.empty? || line.strip.start_with?('#')
+      indent = line.match(/^[ \t]*/)[0]
+      top = indent if top.nil? || indent.length < top.length
+    end
+    top || ''
+  end
+
   # Yields each line of `code` that is Ruby code, with its index: skips
   # =begin/=end comments and the bodies of heredocs, and stops at __END__.
   # Other multi-line strings (%q{...}, '...') are not tracked.
@@ -139,6 +152,10 @@ module PicoRubyLibs
     case puts print p raise
   ]
 
+  # Keywords that end a value, so a `<<`, `?` or `/` after them is an
+  # operator (`true ? a : b`), and `class`, for `class <<ENV`.
+  VALUE_KEYWORDS = %w[true false nil self class __FILE__ __LINE__]
+
   # Scans code in `line` from `pos`, adding the heredocs it opens to
   # `starts`. In an interpolation (`interp`), returns the index after the
   # `}` that closes it; otherwise, or when the line ends first, nil.
@@ -160,6 +177,8 @@ module PicoRubyLibs
         after = literal_end(line, pos + 1, c, nil, starts, true)
       elsif c == "'"
         after = literal_end(line, pos + 1, c, nil, starts, false)
+      elsif c == '?' && kind == :op && char_literal_end(line, pos)
+        after = char_literal_end(line, pos) # ?# / ?" / ?\n
       elsif c == '/' && expression_start?(kind, spaced, line[pos + 1])
         after = literal_end(line, pos + 1, '/', nil, starts, true)
       elsif c == '%' && (m = line[pos..-1].match(PERCENT_START)) && expression_start?(kind, spaced, line[pos + 1])
@@ -186,7 +205,7 @@ module PicoRubyLibs
         word_end += 1 while word_end < line.length && line[word_end].match(/^[A-Za-z0-9_]$/)
         word_end += 1 if word_end < line.length && '?!'.include?(line[word_end])
         word = line[pos...word_end]
-        kind = if '0123456789'.include?(c) || word == 'class' # `class <<ENV`
+        kind = if '0123456789'.include?(c) || VALUE_KEYWORDS.include?(word)
                  :value
                elsif EXPRESSION_KEYWORDS.include?(word)
                  :op
@@ -220,6 +239,20 @@ module PicoRubyLibs
       pos = after
     end
     nil
+  end
+
+  # The index after a character literal (`?a`, `?\\n`) at `pos`, or nil when
+  # the `?` is not one (`?ab`). Only tried after an operator: after a value
+  # or an identifier (which may be a local variable), `?` is read as a
+  # ternary, as Ruby does for `x ?"#" : y`.
+  def self.char_literal_end(line, pos)
+    c = line[pos + 1]
+    return nil if c.nil? || c == ' ' || c == "\t"
+    after = c == '\\' ? pos + 3 : pos + 2
+    return nil if after > line.length
+    nxt = line[after]
+    return nil if !nxt.nil? && nxt.match(/^[A-Za-z0-9_]$/) && c.match(/^[A-Za-z0-9_]$/)
+    after
   end
 
   # A percent literal's opening: `%q(`, `%w[`, `%r{`, ... or a bare `%`
@@ -424,7 +457,9 @@ module PicoRubyLibs
     # (nil for a script written in the page).
     def expand_all(codes, bases = [])
       out = []
-      codes.each_with_index { |code, i| out << expand_script(code, bases[i]) }
+      codes.each_with_index do |code, i|
+        out << expand_script(code, bases[i], bases[i] || "script ##{i + 1}")
+      end
       out
     end
 
@@ -447,6 +482,7 @@ module PicoRubyLibs
       @loaded[base] = true if base
       requires = PicoRubyLibs.find_requires(code)
       return code if requires.empty?
+      top = PicoRubyLibs.top_indent(code).length
 
       # Resolve every require of this file first and start fetching their
       # files together, then inline them in order. A failure is raised when
@@ -467,11 +503,14 @@ module PicoRubyLibs
         out.concat(lines[nxt...req.index])
         nxt = req.index + 1
         line = lines[req.index]
+        indented = false
         begin
           lib, error = resolved[i]
           raise error if error
           if lib.nil?
             out << line
+          elsif req.indent.length > top
+            indented = true
           elsif @loaded[lib.id] || @loaded[lib.url]
             # Both are marked here too, so an entry first reached by its URL
             # still keeps another release of the package from being inlined.
@@ -493,6 +532,15 @@ module PicoRubyLibs
         rescue => e
           kind = req.relative? ? 'require_relative' : 'require'
           raise Error, "#{e.message}\n  from #{kind} '#{req.name}' at #{where}:#{req.index + 1}"
+        end
+        # An indented require is likely inside a def or class, where the
+        # inlined code would break (def) or land in another namespace
+        # (class). Refused even when the library is already loaded, so the
+        # outcome does not depend on the order of the requires.
+        if indented
+          raise Error, "#{where}:#{req.index + 1}: #{line.strip} is indented. " +
+                       'picoruby-libs inlines a library where its require is written, ' +
+                       'so move the require to the top level'
         end
       end
       out.concat(lines[nxt..-1] || [])
