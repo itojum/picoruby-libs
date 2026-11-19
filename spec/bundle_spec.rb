@@ -200,6 +200,15 @@ RSpec.describe PicoRubyLibs::Bundle do
     end
   end
 
+  it 'reads files whose names contain "+" or spaces' do
+    File.write(File.join(dir, 'lib', 'a+b.rb'), "PLUS = 1\n")
+    File.write(File.join(dir, 'lib', 'a b.rb'), "SPACE = 1\n")
+    File.write(app, "require_relative 'lib/a+b'\nrequire_relative 'lib/a b'\n")
+    status, out, err = run('bundle', app, '--no-lockfile')
+    expect([status, err]).to eq([0, ''])
+    expect(out).to include("PLUS = 1\n", "SPACE = 1\n")
+  end
+
   it 'does not write a lockfile with --no-lockfile' do
     expect(run('bundle', app, '--importmap', importmap, '--no-lockfile')[0]).to eq(0)
     expect(File.exist?(lockfile)).to be(false)

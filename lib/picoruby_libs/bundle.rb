@@ -38,7 +38,7 @@ module PicoRubyLibs
         uri = URI(url)
         case uri.scheme
         when 'file'
-          path = URI.decode_www_form_component(uri.path)
+          path = URI.decode_uri_component(uri.path)  # keeps a literal "+"
           File.file?(path) ? File.read(path, encoding: 'UTF-8') : nil
         when 'http', 'https'
           http_get(uri)
@@ -58,8 +58,10 @@ module PicoRubyLibs
         raise Error, "invalid package.json at #{url}: #{e.message}"
       end
 
+      # Like `new URL(path, base)`: characters a URL cannot hold (spaces
+      # and non-ASCII) are percent-encoded; "+", "%" and "#" are kept.
       def absolute_url(path, base = nil)
-        URI.join(base || @page, path).to_s
+        URI.join(base || @page, URI::RFC2396_PARSER.escape(path, /[^\x21-\x7e]/)).to_s
       end
 
       private
