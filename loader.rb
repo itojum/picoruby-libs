@@ -329,7 +329,9 @@ module PicoRubyLibs
   # ---------------------------------------------------------------- resolving
 
   # Turns require names into Libraries. `io` does the network work:
-  #   io.fetch_text(url)    -> String, or nil when not found or unreachable
+  #   io.fetch_text(url, integrity = nil)
+  #                         -> String, or nil when not found, unreachable or
+  #                            not matching `integrity` (an SRI hash)
   #   io.fetch_json(url)    -> Hash, or nil when not found or unreachable
   #   io.absolute_url(path, base = nil)
   #                         -> URL of `path` relative to `base`, or to the
@@ -337,9 +339,10 @@ module PicoRubyLibs
   class Resolver
     attr_reader :io
 
-    def initialize(io, imports: {}, cdn: nil, builtins: BUILTINS)
+    def initialize(io, imports: {}, cdn: nil, builtins: BUILTINS, integrity: {})
       @io = io
       @imports = imports
+      @integrity = integrity || {}
       # `cdn` is one CDN or a list of them, tried in order.
       @cdns = (cdn.is_a?(Array) ? cdn : [cdn || DEFAULT_CDN]).map { |c| c.end_with?('/') ? c : c + '/' }
       @cdns = [DEFAULT_CDN] if @cdns.empty?
@@ -390,6 +393,24 @@ module PicoRubyLibs
       path = dot && dot > 0 ? name : name + '.rb'
       url = @io.absolute_url(path, base)
       library(url, url)
+    end
+
+    # The SRI hash the import map gives one of `urls`, or the same file on
+    # another CDN, or nil.
+    def integrity(urls)
+      url = urls.flat_map { |u| same_files(u) }.find { |u| @integrity.key?(u) }
+      url ? @integrity[url] : nil
+    end
+
+    # Whether every file of the npm package `url` is in must have a hash:
+    # the import map gives a hash to some file of the package (in any
+    # release). The package.json that picks its files is not hashed, so an
+    # unhashed file could be one a changed package.json slipped in.
+    def integrity_required?(url)
+      release = npm_release(url)
+      return false if release.nil?
+      prefixes = @cdns.map { |c| "#{c}#{release[0]}@" }
+      @integrity.keys.any? { |key| prefixes.any? { |prefix| key.start_with?(prefix) } }
     end
 
     # A Library whose mirrors are `url` on the other CDNs, when it is on one.
@@ -621,11 +642,13 @@ module PicoRubyLibs
 
     # Tells io which files are about to be read, so it can fetch them in
     # parallel. Files already read or already inlined in this script are
-    # left out.
+    # left out, and so are files with an integrity hash, which source
+    # fetches with the hash so the browser checks them.
     def prefetch(libs)
       urls = []
       libs.each do |lib|
         next if lib.nil? || @loaded[lib.id] || @sources.key?(lib.url) || urls.include?(lib.url)
+        next if integrity_of(lib)
         urls << lib.url
       end
       @resolver.io.prefetch(urls) unless urls.empty?
@@ -633,18 +656,36 @@ module PicoRubyLibs
 
     # The text of `lib`, from its URL or else from the first mirror that has
     # it.
+    #
+    # When the import map gives the file an integrity hash, the browser checks
+    # the fetched file against it, and a file that does not match counts as
+    # not fetched.
     def source(lib)
+      urls = [lib.url] + lib.mirrors
+      sri = integrity_of(lib)
+      if sri.nil? && @resolver.respond_to?(:integrity_required?) && @resolver.integrity_required?(lib.url)
+        raise Error, "#{lib.url} has no hash under \"integrity\" in the import map, but other files of its package do. " \
+                     "Every file of the package needs one, since the package.json that picks its files is not checked."
+      end
       unless @sources.key?(lib.url)
         text = nil
-        ([lib.url] + lib.mirrors).each do |url|
-          text = @resolver.io.fetch_text(url)
+        urls.each do |url|
+          text = sri ? @resolver.io.fetch_text(url, sri) : @resolver.io.fetch_text(url)
           break unless text.nil?
         end
         @sources[lib.url] = text
       end
       text = @sources[lib.url]
-      raise Error, "failed to load #{lib.url}" if text.nil?
+      if text.nil?
+        raise Error, "failed to load #{lib.url}" + (sri ? " (or it does not match its integrity #{sri})" : '')
+      end
       text
+    end
+
+    # The import map's integrity hash for `lib`, when the resolver has one.
+    def integrity_of(lib)
+      return nil unless @resolver.respond_to?(:integrity)
+      @resolver.integrity([lib.url] + lib.mirrors)
     end
   end
 
@@ -702,13 +743,17 @@ module PicoRubyLibs
       JS
     end
 
-    def fetch_text(url)
-      eval_with({ 'arg' => url }, <<~JS).await
+    # A fetch with `integrity` fails (nil) when the file does not match it.
+    # It never takes a prefetched result, which the browser did not check.
+    def fetch_text(url, integrity = nil)
+      eval_with({ 'arg' => url, 'integrity' => integrity }, <<~JS).await
         (() => {
           const fetches = window.__picoruby_libs_fetches || {};
-          const pending = fetches[arg];
+          const pending = integrity ? null : fetches[arg];
           delete fetches[arg];
-          return pending || fetch(arg).then(r => r.ok ? r.text() : null).catch(() => null);
+          return pending || fetch(arg, integrity ? { integrity } : {})
+            .then(r => r.ok ? r.text() : null)
+            .catch(() => null);
         })()
       JS
     end
@@ -732,13 +777,14 @@ module PicoRubyLibs
       eval_with({ 'arg' => path, 'base' => base }, 'new URL(arg, base || document.baseURI).href')
     end
 
-    # [imports Hash, CDN list or nil] from every text/ruby-importmap script.
-    # "cdn" is a URL or a list of them.
+    # [imports Hash, CDN list or nil, integrity Hash] from every
+    # text/ruby-importmap script. "cdn" is a URL or a list of them.
+    # "integrity" maps file URLs to SRI hashes.
     # Raises Error naming the script when one is not a JSON object.
     def import_map
       map = JS.eval(<<~JS)
         (() => {
-          const map = { imports: {}, cdns: [], error: null };
+          const map = { imports: {}, cdns: [], integrity: {}, error: null };
           const els = document.querySelectorAll('#{IMPORT_MAP}');
           for (let i = 0; i < els.length; i++) {
             const el = els[i];
@@ -752,9 +798,11 @@ module PicoRubyLibs
               return { error: { index: String(i + 1), id: el.id, message: 'expected a JSON object' } };
             }
             Object.assign(map.imports, json.imports || {});
+            Object.assign(map.integrity, json.integrity || {});
             if (json.cdn) map.cdns = [].concat(json.cdn).map(String);
           }
           map.entries = Object.entries(map.imports);
+          map.hashes = Object.entries(map.integrity);
           return map;
         })()
       JS
@@ -765,7 +813,9 @@ module PicoRubyLibs
       imports = {}
       map[:entries].to_a.each { |pair| imports[pair[0]] = pair[1] }
       cdns = map[:cdns].to_a.map { |c| c.to_s }
-      [imports, cdns.empty? ? nil : cdns]
+      integrity = {}
+      map[:hashes].to_a.each { |pair| integrity[pair[0].to_s] = pair[1].to_s }
+      [imports, cdns.empty? ? nil : cdns, integrity]
     end
 
     # [[code, filename, URL or nil]] for each text/ruby-app script, in
@@ -852,13 +902,13 @@ module PicoRubyLibs
 
   def self.start_scripts(io)
     begin
-      imports, cdn = io.import_map
+      imports, cdn, integrity = io.import_map
       scripts = io.app_scripts
     rescue => e
       report(io, "picoruby-libs: no script was started: #{e.message}")
       return
     end
-    expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
+    expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn, integrity: integrity))
     scripts.each_with_index do |script, i|
       code, filename, url = script
       label = "script ##{i + 1}" + (filename ? " (#{filename})" : '')

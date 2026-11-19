@@ -21,8 +21,11 @@ RSpec.describe PicoRubyLibs do
         @prefetches << urls
       end
 
-      def fetch_text(url)
+      # A file's hash is served at "<url>#sri"; a fetch with another
+      # integrity fails like the browser's does.
+      def fetch_text(url, integrity = nil)
         @calls << url
+        return nil if integrity && @files["#{url}#sri"] != integrity
         @files[url]
       end
 
@@ -33,6 +36,7 @@ RSpec.describe PicoRubyLibs do
 
       def absolute_url(path, base = nil)
         return URI.join(base, path).to_s if base
+        return path if path.match?(%r{^[a-z]+://})
         'https://site.test/game/' + path.sub(%r{^\./}, '')
       end
     end
@@ -566,6 +570,68 @@ RSpec.describe PicoRubyLibs do
                            .expand("require 'a'\nrequire 'a/lib/a.rb'\nrequire 'a/lib/./a.rb'\nrequire 'a/lib/b.rb'")
       expect(out.scan('A = 1').size).to eq 1
       expect(out).to include('B = 1')
+    end
+
+    describe 'integrity' do
+      let(:files) do
+        package('a', '1.0.0', 'picoruby' => 'a.rb').merge(
+          "#{cdn}a@1.0.0/a.rb" => 'A = 1',
+          "#{cdn}a@1.0.0/a.rb#sri" => 'sha384-good',
+          'https://mirror.test/npm/a@1.0.0/a.rb' => 'A = 1',
+          'https://mirror.test/npm/a@1.0.0/a.rb#sri' => 'sha384-good',
+        )
+      end
+
+      def expand(files, hashes, **options)
+        described_class.new(resolver(files, integrity: hashes, **options)).expand("require 'a'")
+      end
+
+      it 'refuses a file of a package whose other files have hashes, when it has none' do
+        # A changed package.json points the entry at another file.
+        changed = files.merge(package('a', '1.0.0', 'picoruby' => 'evil.rb'), "#{cdn}a@1.0.0/evil.rb" => 'EVIL = 1')
+        expect { expand(changed, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' }) }
+          .to raise_error(PicoRubyLibs::Error, %r{a@1.0.0/evil.rb has no hash .* other files of its package do})
+      end
+
+      it 'refuses a file of another release of a package whose files have hashes' do
+        changed = files.merge("#{cdn}a/package.json" => { 'name' => 'a', 'version' => '9.9.9', 'picoruby' => 'a.rb' },
+                              "#{cdn}a@9.9.9/a.rb" => 'EVIL = 1')
+        expect { expand(changed, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' }) }
+          .to raise_error(PicoRubyLibs::Error, /has no hash/)
+      end
+
+      it 'finds the hash of a URL mapping under the same file on another CDN' do
+        mirror = 'https://mirror.test/npm/'
+        r = resolver(files, cdn: [cdn, mirror], imports: { 'a' => "#{cdn}a@1.0.0/a.rb" },
+                            integrity: { "#{mirror}a@1.0.0/a.rb" => 'sha384-bad' })
+        expect { described_class.new(r).expand("require 'a'") }
+          .to raise_error(PicoRubyLibs::Error, /does not match its integrity sha384-bad/)
+      end
+
+      it 'fetches a file with the hash the import map gives its URL' do
+        expect(expand(files, { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' })).to include('A = 1')
+      end
+
+      it 'raises when the file does not match its hash' do
+        expect { expand(files, { "#{cdn}a@1.0.0/a.rb" => 'sha384-bad' }) }
+          .to raise_error(PicoRubyLibs::Error, /does not match its integrity sha384-bad/)
+      end
+
+      it 'checks a mirror against the hash given for any of its URLs' do
+        files.delete("#{cdn}a@1.0.0/a.rb")
+        hashes = { 'https://mirror.test/npm/a@1.0.0/a.rb' => 'sha384-good' }
+        expect(expand(files, hashes, cdn: [cdn, 'https://mirror.test/npm/'])).to include('A = 1')
+      end
+
+      it 'does not prefetch a file with a hash, so it is fetched with the hash' do
+        r = resolver(files, integrity: { "#{cdn}a@1.0.0/a.rb" => 'sha384-good' })
+        described_class.new(r).expand("require 'a'")
+        expect(r.io.prefetches.flatten).not_to include("#{cdn}a@1.0.0/a.rb")
+      end
+
+      it 'fetches files without a hash as before' do
+        expect(expand(files, {})).to include('A = 1')
+      end
     end
 
     it 'inlines one release of a package even when its entry is first reached by path' do
