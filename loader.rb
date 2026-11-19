@@ -489,6 +489,10 @@ module PicoRubyLibs
           if lib.nil?
             out << line
           elsif @loaded[lib.id] || @loaded[lib.url]
+            # Both are marked here too, so an entry first reached by its URL
+            # still keeps another release of the package from being inlined.
+            @loaded[lib.id] = true
+            @loaded[lib.url] = true
             out << "#{req.indent}# #{line.strip}  # already loaded by picoruby-libs"
           else
             # Marked before expanding its body, so a circular require is
