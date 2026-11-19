@@ -182,9 +182,12 @@ RSpec.describe PicoRubyLibs do
         "  require 'g' if x",
         'TXT',
         "obj.require 'h'",
+        "puts \"require_relative 'i'\", 'x' if require 'j' if y",
+        "#require_relative 'k'",
+        "puts 'a\\'b require 'l' if z'",
       ].join("\n")
       expect(described_class.find_other_requires(code)).to eq [
-        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false],
+        [1, 'a', false], [2, 'b', false], [2, 'c', true], [4, 'd', false], [10, 'j', false],
       ]
     end
   end
@@ -407,6 +410,12 @@ RSpec.describe PicoRubyLibs do
           "#{cdn}a@1.0.0/a.rb:1: require 'b' was not expanded, so PicoRuby will raise LoadError. " \
           'picoruby-libs only expands a require that is a whole statement on its own line',
         ]
+      end
+
+      it 'does not raise for an import map entry that does not resolve' do
+        ex = described_class.new(resolver(files, imports: { 'optional' => 'npm:missing' }))
+        expect(ex.expand("require 'optional' if false")).to eq "require 'optional' if false"
+        expect(ex.warnings.size).to eq 1
       end
 
       it 'is empty when every require is recognized' do

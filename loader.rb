@@ -97,19 +97,18 @@ module PicoRubyLibs
   end
 
   # [[index, name, relative], ...] for the require calls in `code` that are
-  # not a whole require line, so are left for PicoRuby. Calls after a `#`
-  # that starts a comment are skipped.
+  # not a whole require line, so are left for PicoRuby. Calls inside a
+  # string or a comment are skipped.
   def self.find_other_requires(code)
     found = []
     each_code_line(code) do |line, i|
       next if line.match(REQUIRE_LINE)
-      hash = comment_start(line)
+      code_at = code_mask(line)
       rest = line
       offset = 0
       while (m = rest.match(REQUIRE_CALL))
         at = offset + rest.index(m[0])
-        break if hash && hash < at
-        found << [i, m[3], m[2] == '_relative']
+        found << [i, m[3], m[2] == '_relative'] if code_at[at + m[1].length]
         offset = at + m[0].length
         rest = line[offset..-1]
       end
@@ -117,15 +116,34 @@ module PicoRubyLibs
     found
   end
 
-  # The index of the `#` that starts a comment in `line` (not `#{`), or nil.
-  # A `#` inside a string is taken for a comment too.
-  def self.comment_start(line)
-    pos = 0
-    while (h = line.index('#', pos))
-      return h unless line[h + 1] == '{'
-      pos = h + 1
+  # [true/false, ...] for each character of `line`: whether it is code, not
+  # inside a '...', "..." or `...` string (interpolation included) and not
+  # in a comment. Indexes past the end (after a comment's `#`) are nil.
+  def self.code_mask(line)
+    mask = []
+    quote = nil
+    i = 0
+    while i < line.length
+      c = line[i]
+      if quote
+        mask << false
+        if c == '\\' && i + 1 < line.length
+          mask << false
+          i += 2
+          next
+        end
+        quote = nil if c == quote
+      elsif c == '#'
+        break
+      elsif c == '"' || c == "'" || c == '`'
+        quote = c
+        mask << false
+      else
+        mask << true
+      end
+      i += 1
     end
-    nil
+    mask
   end
 
   # The indentation of the least indented code line (not blank, not a
@@ -536,11 +554,22 @@ module PicoRubyLibs
     def warn_other_requires(code, base, where)
       PicoRubyLibs.find_other_requires(code).each do |found|
         index, name, relative = found
-        next unless relative || @resolver.resolve(name)
+        next unless relative || library?(name)
         call = relative ? "require_relative '#{name}'" : "require '#{name}'"
         @warnings << "#{where}:#{index + 1}: #{call} was not expanded, so PicoRuby " +
                      'will raise LoadError. picoruby-libs only expands a require ' +
                      'that is a whole statement on its own line'
+      end
+    end
+
+    # Whether `require name` would be inlined. A resolver error (an import
+    # map entry that does not resolve) counts as yes, but is not raised: the
+    # require is not expanded, and may never run (`require 'x' if false`).
+    def library?(name)
+      begin
+        !@resolver.resolve(name).nil?
+      rescue Error
+        true
       end
     end
 
