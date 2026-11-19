@@ -93,6 +93,22 @@ Pin versions or map names to other sources with a `text/ruby-importmap` script:
 
 A top-level `"cdn"` key changes the npm CDN (default `https://cdn.jsdelivr.net/npm/`).
 
+## Events
+
+The loader dispatches events on `document` so JavaScript on the page can tell when it is done:
+
+- `picoruby-libs:error` for each script that was not started (and once if the page's scripts or import map could not be read). `event.detail` is the error message, the same text sent to `console.error`.
+- `picoruby-libs:ready` once, after every script has been started as a task or skipped. It comes after any `picoruby-libs:error` events. The tasks have been created, not finished.
+
+```html
+<script>
+  document.addEventListener('picoruby-libs:error', e => showError(e.detail));
+  document.addEventListener('picoruby-libs:ready', () => hideSpinner());
+</script>
+```
+
+Add the listeners before `init.iife.js` runs, so none is missed.
+
 ## Limitations
 
 - Only `require` lines that are a whole statement are recognized. A require inside a method or `if` is still expanded where it is written, since the loader does not parse Ruby.

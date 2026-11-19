@@ -590,17 +590,43 @@ module PicoRubyLibs
       JS.global[:__picoruby_libs_arg] = message
       JS.eval('console.error(window.__picoruby_libs_arg)')
     end
+
+    # Dispatches a CustomEvent named `type` on document, with `detail` (a
+    # String or nil).
+    def dispatch_event(type, detail = nil)
+      JS.global[:__picoruby_libs_arg] = type
+      JS.global[:__picoruby_libs_detail] = detail
+      JS.eval(<<~JS)
+        document.dispatchEvent(new CustomEvent(window.__picoruby_libs_arg,
+                                               { detail: window.__picoruby_libs_detail }))
+      JS
+    end
   end
 
+  READY_EVENT = 'picoruby-libs:ready'
+  ERROR_EVENT = 'picoruby-libs:error'
+
   # Expands and starts each text/ruby-app script in document order. A script
-  # that fails to expand is reported with io.report_error and skipped; the
-  # others still start.
+  # that fails to expand is reported and skipped; the others still start.
+  # Each failure is sent to console.error and dispatched on document as a
+  # picoruby-libs:error event whose detail is the message. When every script
+  # has been started or skipped, picoruby-libs:ready is dispatched, once.
   def self.boot(io = BrowserIO.new)
+    start_scripts(io)
+    io.dispatch_event(READY_EVENT)
+  end
+
+  def self.report(io, message)
+    io.report_error(message)
+    io.dispatch_event(ERROR_EVENT, message)
+  end
+
+  def self.start_scripts(io)
     begin
       imports, cdn = io.import_map
       scripts = io.app_scripts
     rescue => e
-      io.report_error("picoruby-libs: no script was started: #{e.message}")
+      report(io, "picoruby-libs: no script was started: #{e.message}")
       return
     end
     expander = Expander.new(Resolver.new(io, imports: imports, cdn: cdn))
@@ -611,7 +637,7 @@ module PicoRubyLibs
         raise Error, "failed to load #{url}" if code.nil?
         expander.expand_script(code, url, url || "script ##{i + 1}") { |expanded| io.create_task(expanded, filename) }
       rescue => e
-        io.report_error("picoruby-libs: #{label} was not started: #{e.message}")
+        report(io, "picoruby-libs: #{label} was not started: #{e.message}")
       end
     end
   end
